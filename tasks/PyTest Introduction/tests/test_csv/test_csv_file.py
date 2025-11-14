@@ -12,11 +12,14 @@ class TestCVSValidation:
         return pd.read_csv(csv_file_path)
 
     #Test 1: validate that file is not empty
+    @pytest.mark.csv_test
+    @pytest.mark.data_validation
     def test_file_not_empty(self, get_csv_data):
         """Validate that file is not empty"""
         assert len(get_csv_data)>0, "CVS file should not be empty - Found empty file"
 
     #Test 2: Validate the schema of the file (id, name, age, email)
+    @pytest.mark.schema_test
     def test_validate_schema(self, get_csv_data):
         """Validate the schema of the file (id, name, age, email)"""
         expected_columns = ['id','name','age','email','is_active']
@@ -29,6 +32,7 @@ class TestCVSValidation:
 
     #Test 3: Validate that the age column contains valid values (0-100) - Use Custom and Predefined Marks (skip)
     @pytest.mark.skip(reason="Age validation TBD")
+    @pytest.mark.data_validation
     def test_age_column_valid(self, get_csv_data):
         """Validate that the age column contains valid values """
         invalid_ages = get_csv_data[~get_csv_data['age'].between(0,100)]
@@ -37,6 +41,8 @@ class TestCVSValidation:
             f"Row(s)s with invalid age:{invalid_ages[['id','age']].to_dict()}")
 
     #Test 4: Validate that the email column contains valid email addressess
+    @pytest.mark.csv_test
+    @pytest.mark.data_validation
     def test_email_column_valid(self, get_csv_data):
         """Validate that the email column contains valid email adresses format """
         email_pattern =  r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
@@ -48,6 +54,7 @@ class TestCVSValidation:
 
     #Test 5: Validate there are not duplicates - Use Custom and Predefined Marks (xfail)
     @pytest.mark.xfail(reason="Duplicate rows expected in current test data ")
+    @pytest.mark.data_validation
     def test_duplicates(self, get_csv_data):
         """Validate there are not duplicate rows"""
         duplicates = get_csv_data[get_csv_data.duplicated()]
@@ -60,6 +67,7 @@ class TestCVSValidation:
         (1, False),
         (2, True)
     ])
+    @pytest.mark.csv_test
     def test_active_players(self, get_csv_data, id, expected_is_active):
         """Validate is_active = False for id = 1 and is_active = True for id= 2"""
         row = get_csv_data[get_csv_data['id']==id]
@@ -72,6 +80,7 @@ class TestCVSValidation:
         )
 
     #Test 7: Validate is active without parameter
+    @pytest.mark.csv_test
     def test_active_player(self, get_csv_data):
         """Validate is_active = True for id =2 without parameter """
         row = get_csv_data[get_csv_data['id']==2]
