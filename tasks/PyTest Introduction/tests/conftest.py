@@ -1,5 +1,6 @@
 import pytest
 import pandas as pd
+import os
 
 # Fixture to read the CSV file
 @pytest.fixture(scope="session")
@@ -41,7 +42,7 @@ def schema_validator():
 # Pytest hook to mark unmarked tests with a custom mark
 def pytest_configure(config):
     """ Register custom markers in pytest """
-    config.addinvalue_line("markers",
+    config.addinivalue_line("markers",
                            "unmarked: test that do not have a explicit marks (assigned automatically)"
                            )
     config.addinivalue_line("markers",
@@ -54,13 +55,13 @@ def pytest_configure(config):
                             "data_validation: tests for data content validation"
                             )
 
-    #mark tests that do not have explicit marks. The hook should assign tests without marks to a custom mark:unmarked.
-    def pytest_collection_modifyitems(config, items):
-        """
-        Hook to automatically assign 'unmarked' mark to tests without explicit marks
-        """
-        for item in items:
-            # Check if the test has any markers
-            if not any(item.iter_markers()):
-                # Assign 'unmarked' mark if no marks
-                item.add_marker(pytest.mark.unmarked)
+#mark tests that do not have explicit marks. The hook should assign tests without marks to a custom mark:unmarked.
+def pytest_collection_modifyitems(config, items):
+    """
+    Hook to automatically assign 'unmarked' mark to tests without explicit marks
+    """
+    for item in items:
+        # Check if the test has any markers
+        if not any(item.iter_markers()):
+            # Assign 'unmarked' mark if no marks
+            item.add_marker(pytest.mark.unmarked)
