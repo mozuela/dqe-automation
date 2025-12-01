@@ -26,20 +26,29 @@ class DataQualityLibrary:
     def check_count(df1, df2):
         count1 = len(df1)
         count2 = len(df2)
-        assert df1.count == df2.count, f"fCount mismatch: {count1} vs {count2}"
+        assert df1.count == df2.count, f"Count mismatch: {count1} vs {count2}"
 
     @staticmethod
     #Check if the dfs have same data
     def check_data_full_data_set(df1, df2):
-        df1 = df2
+        set1 = set(df1.itertuples(index=False, name=None))
+        set2 = set(df2.itertuples(index=False, name=None))
+        assert set1 == set2, f"Dataframe data does not match"
 
     @staticmethod
     #Check if the df has data
     def check_dataset_is_not_empty(df):
-        df.is_not_empty
+        assert len(df)>0, "Dataframe is empty"
 
     @staticmethod
-    #Check not null in the columns 
+    #Check not null in the columns
     def check_not_null_values(df, column_names=None):
-        col for df.column_names:
-            col.not_null
+        if column_names is None:
+            column_names = df.columns.tolist()
+
+        for column in df.column_names:
+            if column in df.columns:
+                null_count = df[column].isnull().sum()
+                assert null_count == 0, f"fColumn {column} has {null_count} null values"
+            else:
+                raise ValueError (f"Column '{column}' not found in DataFrame")
