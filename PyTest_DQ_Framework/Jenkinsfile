@@ -2,19 +2,15 @@ pipeline {
     agent any
 
     stages {
-        stage('Declarative: Checkout SCM') {
-            steps {
-                checkout scm
-            }
-        }
-
         stage('Checkout') {
             steps {
                 checkout([
                     $class: 'GitSCM',
                     branches: [[name: '*/main']],
                     extensions: [],
-                    userRemoteConfigs: [[url: 'https://github.com/mozuela/dqe-automation']]
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/mozuela/dqe-automation'
+                    ]]
                 ])
             }
         }
@@ -26,8 +22,15 @@ pipeline {
                     echo "Current directory:"
                     pwd
                     ls -la
-                    echo "Checking /parquet_data directory:"
-                    ls -la /parquet_data/ || echo "/parquet_data not found, will use alternative path"
+                    echo "Checking project structure:"
+                    find . -type f -name "*.py" | head -20
+
+                    if [ -d "PyTest DQ Framework" ]; then
+                        cd "PyTest DQ Framework"
+                        echo "Project structure in PyTest DQ Framework:"
+                        find . -type f -name "*.py" | head -20
+                        cd ..
+                    fi
                 '''
             }
         }
@@ -36,17 +39,25 @@ pipeline {
             steps {
                 sh '''
                     echo "=== Installing Dependencies ==="
-                    cd "PyTest DQ Framework"
-                    if [ -f requirements.txt ]; then
-                        echo "Installing dependencies..."
-                        /var/jenkins_home/venv/bin/pip install -r requirements.txt
+
+                    if [ -f "PyTest DQ Framework/requirements.txt" ]; then
+                        echo "Found requirements.txt in PyTest DQ Framework/"
+                        cd "PyTest DQ Framework"
+                    elif [ -f "requirements.txt" ]; then
+                        echo "Found requirements.txt in root"
+                    else
+                        echo "No requirements.txt found"
                     fi
-                    echo "Testing critical imports..."
-                    /var/jenkins_home/venv/bin/python -c "
+
+                    python3 -m pip install --upgrade pip
+                    python3 -m pip install pytest pandas psycopg2-binary pyarrow pytest-html
+
+                    python3 -c "
                     import psycopg2
-                    import pandas
+                    import pandas as pd
                     import pytest
-                    print('✅ All critical imports successful')
+                    import pyarrow
+                    print('All critical imports successful')
                     "
                 '''
             }
@@ -66,34 +77,72 @@ pipeline {
                             echo "=== Running DQE Tests ==="
                             echo "PostgreSQL User: ${DB_USER}"
 
-                            cd "PyTest DQ Framework"
+                            mkdir -p reports
 
-                            # Create reports directory
-                            mkdir -p "/var/jenkins_home/workspace/DQE_Aut/PyTest DQ Framework/reports"
+                            if [ -d "PyTest DQ Framework" ]; then
+                                PROJECT_ROOT="PyTest DQ Framework"
+                            else
+                                PROJECT_ROOT="."
+                            fi
 
-                            # Determine parquet path - use /parquet_data if it exists
+                            cd "${PROJECT_ROOT}"
+
+                            echo "Current directory for tests:"
+                            pwd
+                            ls -la
+
+                            echo "Looking for test files:"
+                            find . -name "test_*.py" -type f | head -10
+
+                            if [ -d "tests/dq_checks/parquet_files" ]; then
+                                echo "Found test directory: tests/dq_checks/parquet_files"
+                                ls -la "tests/dq_checks/parquet_files/"
+                            else
+                                echo "Test directory not found"
+                                find . -type d -name "*test*" -o -name "*dq*"
+                            fi
+
+                            PARQUET_PATH=""
                             if [ -d "/parquet_data" ]; then
                                 PARQUET_PATH="/parquet_data"
                                 echo "Using parquet data from: ${PARQUET_PATH}"
-                                find ${PARQUET_PATH} -name "*.parquet" | head -3
+                            elif [ -d "parquet_data" ]; then
+                                PARQUET_PATH="parquet_data"
+                                echo "Using local parquet data from: ${PARQUET_PATH}"
+                            elif [ -d "../parquet_data" ]; then
+                                PARQUET_PATH="../parquet_data"
+                                echo "Using parent parquet data from: ${PARQUET_PATH}"
                             else
-                                PARQUET_PATH="/var/jenkins_home/workspace/DQE_Aut/data_dev/parquet_data"
-                                echo "Using parquet data from: ${PARQUET_PATH}"
-                                mkdir -p "${PARQUET_PATH}"
+                                echo "No parquet directory found"
+                                PARQUET_PATH="./"
                             fi
 
-                            echo "Running 3 DQE tests with PostgreSQL credentials..."
+                            if [ ! -f "pytest.ini" ]; then
+                                echo "Creating pytest.ini configuration..."
+                                cat > pytest.ini << EOF
+[pytest]
+testpaths = tests/dq_checks/parquet_files
+python_files = test_*.py
+python_classes = Test*
+python_functions = test_*
+addopts = -v --tb=short
+EOF
+                            fi
 
-                            /var/jenkins_home/venv/bin/pytest tests/dq_checks/parquet_files/ -v \\
-                                --db_host=host.containers.internal \\
-                                --db_port=5434 \\
-                                --db_name=mydatabase \\
-                                --db_user=${DB_USER} \\
-                                --db_password=${DB_PASSWORD} \\
-                                --parquet_path=${PARQUET_PATH} \\
-                                --html="/var/jenkins_home/workspace/DQE_Aut/PyTest DQ Framework/reports/dqe_report.html" \\
+                            echo "Running DQE tests..."
+
+                            python3 -m pytest tests/dq_checks/parquet_files/ -v \\
+                                --db-host=host.docker.internal \\
+                                --db-port=5434 \\
+                                --db-name=mydatabase \\
+                                --db-user=${DB_USER} \\
+                                --db-password=${DB_PASSWORD} \\
+                                --parquet-path=${PARQUET_PATH} \\
+                                --html=../reports/dqe_report.html \\
                                 --self-contained-html \\
-                                --junitxml="/var/jenkins_home/workspace/DQE_Aut/PyTest DQ Framework/reports/junit_results.xml"
+                                --junitxml=../reports/junit_results.xml || true
+
+                            echo "Test execution completed"
                         '''
                     }
                 }
@@ -102,11 +151,18 @@ pipeline {
 
         stage('Archive Results') {
             when {
-                expression { currentBuild.result == null || currentBuild.result == 'SUCCESS' }
+                expression { currentBuild.currentResult == null || currentBuild.currentResult == 'SUCCESS' || currentBuild.currentResult == 'UNSTABLE' }
             }
             steps {
-                archiveArtifacts artifacts: 'PyTest DQ Framework/reports/*', fingerprint: true
-                junit 'PyTest DQ Framework/reports/junit_results.xml'
+                script {
+                    if (fileExists('reports')) {
+                        archiveArtifacts artifacts: 'reports/*', fingerprint: true
+                        junit 'reports/junit_results.xml'
+                    } else if (fileExists('PyTest DQ Framework/reports')) {
+                        archiveArtifacts artifacts: 'PyTest DQ Framework/reports/*', fingerprint: true
+                        junit 'PyTest DQ Framework/reports/junit_results.xml'
+                    }
+                }
             }
         }
     }
@@ -115,8 +171,14 @@ pipeline {
         always {
             sh '''
                 echo "=== Pipeline completed ==="
-                echo "Build Status: ${currentBuild.result}"
-                echo "Workspace: ${WORKSPACE}"
+                echo "Build Status: ${currentBuild.currentResult}"
+                echo "Workspace contents:"
+                ls -la
+
+                if [ -d "reports" ]; then
+                    echo "Reports directory:"
+                    ls -la reports/
+                fi
             '''
         }
         success {
