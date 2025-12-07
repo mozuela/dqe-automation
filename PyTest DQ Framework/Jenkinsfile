@@ -2,12 +2,38 @@ pipeline {
     agent any
 
     stages {
-        stage('Test Connection') {
+        stage('Run Tests with Credentials') {
             steps {
                 checkout scm
-                echo "Pipeline started"
-                sh 'echo "Hello from Jenkins"'
+
+                withCredentials([usernamePassword(
+                    credentialsId: 'postgres-dqe',  // ESTE es el ID que debe existir
+                    usernameVariable: 'DB_USER',
+                    passwordVariable: 'DB_PASS'
+                )]) {
+                    sh '''
+                    echo "=== USING CREDENTIALS ==="
+                    echo "User variable exists: ${DB_USER}"
+
+                    pip install -r requirements.txt
+                    mkdir -p reports
+                    cd "PyTest DQ Framework"
+
+                    pytest "tests/dq checks/parquet_files/test_*.py" -v \
+                      --db_host="localhost" \
+                      --db_port="5434" \
+                      --db_name="mydatabase" \
+                      --db_user=${DB_USER} \
+                      --db_password=${DB_PASS} \
+                      --parquet_path="/parquet_data" \
+                      --html=../reports/pytest_report.html \
+                      --self-contained-html \
+                      --junitxml=../reports/junit_results.xml 2>&1 | tee ../reports/test_output.log
+                    '''
+                }
             }
         }
+
+        // ... (mantén los otros stages igual) ...
     }
 }
