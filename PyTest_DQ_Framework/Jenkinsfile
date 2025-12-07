@@ -55,20 +55,60 @@ pipeline {
                                 --self-contained-html \
                                 --junitxml=reports/junit_results.xml 2>&1 | tee test_output.log || true
 
-                            # Generate simple summary
+                            # Generate dynamic summary
                             echo ""
-                            echo "=== TEST EXECUTION COMPLETED ==="
-                            echo "Check generated reports for details:"
-                            echo "1. HTML Report: reports/test_report.html"
-                            echo "2. JUnit Report: reports/junit_results.xml"
-                            echo "3. Full Log: test_output.log"
+                            echo "=== TEST EXECUTION SUMMARY ==="
 
-                            # Simple file check
+                            # Check if tests ran
+                            if [ -f "test_output.log" ]; then
+                                echo "Test execution log captured."
+
+                                # Extract key information using safer grep patterns
+                                TOTAL_TESTS=$(grep "collected.*items" test_output.log | tail -1 | grep -o "[0-9]\+" || echo "0")
+                                PASSED=$(grep "passed" test_output.log | grep -o "[0-9]\+" | head -1 || echo "0")
+                                FAILED=$(grep "failed" test_output.log | grep -o "[0-9]\+" | head -1 || echo "0")
+                                SKIPPED=$(grep "skipped" test_output.log | grep -o "[0-9]\+" | head -1 || echo "0")
+                                ERRORS=$(grep "errors" test_output.log | grep -o "[0-9]\+" | head -1 || echo "0")
+
+                                echo "Total Tests Collected: ${TOTAL_TESTS}"
+                                echo "Tests Passed: ${PASSED}"
+                                echo "Tests Failed: ${FAILED}"
+                                echo "Tests Skipped: ${SKIPPED}"
+                                echo "Tests with Errors: ${ERRORS}"
+
+                                # Show test names and status
+                                echo ""
+                                echo "=== INDIVIDUAL TEST RESULTS ==="
+                                grep -E "test_.* (PASSED|FAILED|ERROR|SKIPPED)" test_output.log | head -20 || echo "No detailed test results found in log"
+
+                                # Show errors if any
+                                if [ "${FAILED}" != "0" ] || [ "${ERRORS}" != "0" ]; then
+                                    echo ""
+                                    echo "=== FAILURES AND ERRORS DETECTED ==="
+                                    grep -A 10 -B 2 "FAILURES\\|ERRORS" test_output.log || echo "No failure details extracted"
+
+                                    # Show first few lines of actual failures
+                                    echo ""
+                                    echo "First failure details:"
+                                    grep -A 5 "FAILED\\|ERROR" test_output.log | head -20 || echo "No failure details available"
+                                fi
+                            else
+                                echo "WARNING: Test output log not found"
+                            fi
+
+                            # Check report generation
                             if [ -f "reports/test_report.html" ]; then
-                                echo "HTML report generated successfully"
+                                echo ""
+                                echo "=== REPORT GENERATION ==="
+                                echo "HTML Report: reports/test_report.html"
+                                echo "JUnit Report: reports/junit_results.xml"
+                                echo "Report filesize: $(du -h reports/test_report.html | cut -f1)"
                             else
                                 echo "WARNING: HTML report was not generated"
                             fi
+
+                            echo ""
+                            echo "=== EXECUTION COMPLETED ==="
                         '''
                     }
                 }
@@ -77,7 +117,10 @@ pipeline {
 
         stage('Archive Results') {
             steps {
-                sh 'echo "Archiving test results..."'
+                sh '''
+                    echo "=== Archiving Test Results ==="
+                    echo "Archiving reports and logs..."
+                '''
                 archiveArtifacts artifacts: 'PyTest_DQ_Framework/reports/*, PyTest_DQ_Framework/test_output.log', fingerprint: true
                 junit 'PyTest_DQ_Framework/reports/junit_results.xml'
             }
@@ -86,7 +129,24 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline execution completed. Check artifacts for test results."
+            sh '''
+                echo "=== PIPELINE EXECUTION SUMMARY ==="
+                echo "Job Name: ${JOB_NAME}"
+                echo "Build Number: ${BUILD_NUMBER}"
+                echo "Build URL: ${BUILD_URL}"
+                echo "Workspace: ${WORKSPACE}"
+                echo ""
+                echo "Artifacts Available:"
+                echo "- HTML Test Report: ${BUILD_URL}artifact/PyTest_DQ_Framework/reports/test_report.html"
+                echo "- JUnit Results: ${BUILD_URL}artifact/PyTest_DQ_Framework/reports/junit_results.xml"
+                echo "- Console Log: ${BUILD_URL}artifact/PyTest_DQ_Framework/test_output.log"
+            '''
+        }
+        success {
+            echo 'Pipeline executed successfully. Check test results for individual test status.'
+        }
+        failure {
+            echo 'Pipeline execution encountered issues. Check console output and test reports for details.'
         }
     }
 }
