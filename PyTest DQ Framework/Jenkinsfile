@@ -69,7 +69,7 @@ pipeline {
                             cd "PyTest DQ Framework"
 
                             # Create reports directory
-                            mkdir -p /var/jenkins_home/workspace/DQE_Aut/PyTest\ DQ\ Framework/reports
+                            mkdir -p "/var/jenkins_home/workspace/DQE_Aut/PyTest DQ Framework/reports"
 
                             # Determine parquet path - use /parquet_data if it exists
                             if [ -d "/parquet_data" ]; then
@@ -79,21 +79,21 @@ pipeline {
                             else
                                 PARQUET_PATH="/var/jenkins_home/workspace/DQE_Aut/data_dev/parquet_data"
                                 echo "Using parquet data from: ${PARQUET_PATH}"
-                                mkdir -p ${PARQUET_PATH}
+                                mkdir -p "${PARQUET_PATH}"
                             fi
 
                             echo "Running 3 DQE tests with PostgreSQL credentials..."
 
-                            /var/jenkins_home/venv/bin/pytest tests/dq\ checks/parquet_files/ -v \
-                                --db_host=host.containers.internal \
-                                --db_port=5434 \
-                                --db_name=mydatabase \
-                                --db_user=${DB_USER} \
-                                --db_password=${DB_PASSWORD} \
-                                --parquet_path=${PARQUET_PATH} \
-                                --html=/var/jenkins_home/workspace/DQE_Aut/PyTest\ DQ\ Framework/reports/dqe_report.html \
-                                --self-contained-html \
-                                --junitxml=/var/jenkins_home/workspace/DQE_Aut/PyTest\ DQ\ Framework/reports/junit_results.xml
+                            /var/jenkins_home/venv/bin/pytest tests/dq\ checks/parquet_files/ -v \\
+                                --db_host=host.containers.internal \\
+                                --db_port=5434 \\
+                                --db_name=mydatabase \\
+                                --db_user=${DB_USER} \\
+                                --db_password=${DB_PASSWORD} \\
+                                --parquet_path=${PARQUET_PATH} \\
+                                --html="/var/jenkins_home/workspace/DQE_Aut/PyTest DQ Framework/reports/dqe_report.html" \\
+                                --self-contained-html \\
+                                --junitxml="/var/jenkins_home/workspace/DQE_Aut/PyTest DQ Framework/reports/junit_results.xml"
                         '''
                     }
                 }
