@@ -1,31 +1,73 @@
 pipeline {
     agent any
+
     environment {
-        POSTGRES_SECRET = credentials('postgres-credentials')
+        DB_CREDS = credentials('postgres-dqe')
     }
+
     stages {
-        stage('Run Data Quality Tests') {
+        stage('Execute & Report') {
             steps {
+                checkout scm
                 sh '''
-                pytest tests/ -m "parquet_data" \
-                    --db_host="postgres" \
-                    --db_port="5432" \
-                    --db_name="mydatabase" \
-                    --db_user=${POSTGRES_SECRET_USR} \
-                    --db_password=${POSTGRES_SECRET_PSW} \
-                    --html=html_report/report.html
+                # Setup
+                pip install -r requirements.txt
+                mkdir -p reports
+
+                # Run tests
+                pytest "tests/dq checks/parquet_files/test_*.py" -v \
+                  --db_host="localhost" \
+                  --db_port="5434" \
+                  --db_name="mydatabase" \
+                  --db_user=${DB_CREDS_USR} \
+                  --db_password=${DB_CREDS_PSW} \
+                  --parquet_path="/parquet_data" \
+                  --html=reports/dqe_report.html \
+                  --self-contained-html \
+                  --junitxml=reports/results.xml 2>&1 | tee test.log
+
+                # Generate automatic summary from test results
+                echo "=== AUTOMATIC ISSUE SUMMARY ===" > reports/issues.md
+                echo "Generated: $(date)" >> reports/issues.md
+                echo "" >> reports/issues.md
+
+                # Extract failures from log
+                echo "## Data Quality Issues Found:" >> reports/issues.md
+                grep -A2 -B2 "FAILED\|ERROR\|AssertionError" test.log | head -20 >> reports/issues.md
+                echo "" >> reports/issues.md
+
+                # Count tests
+                TOTAL=$(grep -c "PASSED\|FAILED" test.log || echo "0")
+                PASSED=$(grep -c "PASSED" test.log || echo "0")
+                FAILED=$(grep -c "FAILED" test.log || echo "0")
+
+                echo "## Test Summary:" >> reports/issues.md
+                echo "- Total tests: $TOTAL" >> reports/issues.md
+                echo "- Passed: $PASSED" >> reports/issues.md
+                echo "- Failed: $FAILED" >> reports/issues.md
+                echo "" >> reports/issues.md
+
+                echo "## Common Issues Pattern:" >> reports/issues.md
+                if grep -q "Count mismatch" test.log; then
+                    echo "1. 📊 RECORD COUNT MISMATCH: Source and target have different number of records"
+                fi
+                if grep -q "Column.*not found" test.log; then
+                    echo "2. 🔤 COLUMN MISMATCH: Different column names between source and target"
+                fi
+                if grep -q "negative values\|below minimum" test.log; then
+                    echo "3. ⚠️  INVALID VALUES: Values outside expected range (negative, etc.)"
+                fi
                 '''
             }
         }
-        stage('Archive Reports') {
+
+        stage('Archive') {
             steps {
-                archiveArtifacts artifacts: 'html_report/**'
-                publishHTML(target: [
-                    allowMissing: false,
-                    keepAll: true,
-                    reportDir: 'html_report',
-                    reportFiles: 'report.html',
-                    reportName: 'Data Quality Report'
+                archiveArtifacts artifacts: 'reports/*', fingerprint: true
+                publishHTML([
+                    reportDir: 'reports',
+                    reportFiles: 'dqe_report.html',
+                    reportName: 'DQE Report'
                 ])
             }
         }
