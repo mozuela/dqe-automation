@@ -21,15 +21,14 @@ pipeline {
                     pwd
                     ls -la
 
-                    echo "Checking Python availability:"
-                    python3 --version
-                    python3 -m pip --version || echo "pip not available"
-
-                    echo "Looking for requirements.txt:"
+                    echo "Checking for requirements.txt:"
                     find . -name "requirements.txt" -type f
 
-                    echo "Checking for PyTest framework directories:"
-                    ls -la | grep -i pytest
+                    echo "Content of PyTest_DQ_Framework/requirements.txt:"
+                    cat PyTest_DQ_Framework/requirements.txt 2>/dev/null || echo "File not found"
+
+                    echo "Python availability:"
+                    python3 --version
                 '''
             }
         }
@@ -39,31 +38,42 @@ pipeline {
                 sh '''
                     echo "=== Installing Dependencies ==="
 
-                    echo "Checking for virtual environment..."
-                    if [ ! -d "venv" ]; then
-                        echo "Creating virtual environment..."
-                        python3 -m venv venv
-                    fi
+                    echo "1. Creating virtual environment..."
+                    python3 -m venv venv
 
-                    echo "Activating virtual environment..."
-                    source venv/bin/activate
+                    echo "2. Activating virtual environment..."
+                    . venv/bin/activate
 
-                    echo "Upgrading pip in virtual environment..."
+                    echo "3. Upgrading pip..."
                     pip install --upgrade pip
 
-                    echo "Installing dependencies..."
-                    pip install pytest pandas psycopg2-binary pyarrow pytest-html
+                    echo "4. Installing from requirements.txt..."
+                    if [ -f "PyTest_DQ_Framework/requirements.txt" ]; then
+                        echo "Installing from PyTest_DQ_Framework/requirements.txt"
+                        pip install -r PyTest_DQ_Framework/requirements.txt
+                    elif [ -f "requirements.txt" ]; then
+                        echo "Installing from root requirements.txt"
+                        pip install -r requirements.txt
+                    else
+                        echo "No requirements.txt found, installing basic packages"
+                        pip install pytest pandas psycopg2-binary pyarrow pytest-html
+                    fi
 
-                    echo "Verifying installations..."
+                    echo "5. Verifying installations..."
                     python -c "
-                    import psycopg2
-                    import pandas as pd
-                    import pytest
-                    import pyarrow
-                    print('All critical imports successful')
+                    try:
+                        import psycopg2
+                        import pandas as pd
+                        import pytest
+                        import pyarrow
+                        print('SUCCESS: All critical imports work')
+                    except ImportError as e:
+                        print(f'ERROR: {e}')
+                        exit(1)
                     "
 
-                    deactivate
+                    echo "6. Installed packages:"
+                    pip list --format=columns
                 '''
             }
         }
@@ -97,7 +107,7 @@ pipeline {
                             echo "Framework directory: ${FRAMEWORK_DIR}"
 
                             # Activate virtual environment
-                            source venv/bin/activate
+                            . venv/bin/activate
 
                             # Create reports directory
                             mkdir -p "${FRAMEWORK_DIR}/reports"
@@ -107,29 +117,34 @@ pipeline {
 
                             echo "Current directory:"
                             pwd
+                            echo "Contents:"
                             ls -la
 
-                            echo "Test files found:"
-                            find tests -name "test_*.py" -type f
+                            echo "Test structure:"
+                            find . -name "test_*.py" -type f | head -10
 
                             # Determine parquet path
                             PARQUET_PATH=""
                             if [ -d "/parquet_data" ]; then
                                 PARQUET_PATH="/parquet_data"
+                                echo "Using /parquet_data"
                             elif [ -d "../data_dev/parquet_data" ]; then
                                 PARQUET_PATH="../data_dev/parquet_data"
-                            elif [ -d "../../data_dev/parquet_data" ]; then
-                                PARQUET_PATH="../../data_dev/parquet_data"
+                                echo "Using ../data_dev/parquet_data"
+                            elif [ -d "parquet_data" ]; then
+                                PARQUET_PATH="parquet_data"
+                                echo "Using local parquet_data"
                             else
-                                echo "Warning: No parquet directory found in standard locations"
-                                echo "Will use current directory"
+                                echo "Warning: No parquet directory found"
                                 PARQUET_PATH="."
                             fi
 
-                            echo "Using PARQUET_PATH: ${PARQUET_PATH}"
-                            ls -la "${PARQUET_PATH}" 2>/dev/null || echo "Cannot list PARQUET_PATH"
-
-                            echo "Running tests with command line arguments..."
+                            echo "Running tests with parameters:"
+                            echo "- DB Host: host.docker.internal"
+                            echo "- DB Port: 5434"
+                            echo "- DB Name: mydatabase"
+                            echo "- DB User: ${DB_USER}"
+                            echo "- Parquet Path: ${PARQUET_PATH}"
 
                             # Run tests
                             python -m pytest tests/dq_checks/parquet_files/ -v \\
@@ -141,10 +156,12 @@ pipeline {
                                 --parquet-path="${PARQUET_PATH}" \\
                                 --html="reports/dqe_report.html" \\
                                 --self-contained-html \\
-                                --junitxml="reports/junit_results.xml" || echo "Tests completed with some failures"
+                                --junitxml="reports/junit_results.xml" \\
+                                --capture=no || echo "Tests completed with exit code: $?"
 
                             echo "Test execution finished"
-                            deactivate
+                            echo "Reports generated:"
+                            ls -la reports/ 2>/dev/null || echo "No reports directory"
                         '''
                     }
                 }
@@ -161,7 +178,9 @@ pipeline {
             }
             steps {
                 script {
-                    // Determine framework directory
+                    echo "Archiving test results..."
+
+                    // Find the correct framework directory
                     def frameworkDir = ""
                     if (fileExists('PyTest_DQ_Framework')) {
                         frameworkDir = 'PyTest_DQ_Framework'
@@ -169,12 +188,19 @@ pipeline {
                         frameworkDir = 'PyTest DQ Framework'
                     }
 
-                    if (frameworkDir && fileExists("${frameworkDir}/reports")) {
-                        archiveArtifacts artifacts: "${frameworkDir}/reports/*", fingerprint: true
-                        junit "${frameworkDir}/reports/junit_results.xml"
-                        echo "Artifacts archived from ${frameworkDir}/reports/"
+                    if (frameworkDir) {
+                        echo "Archiving from directory: ${frameworkDir}"
+
+                        // Archive reports if they exist
+                        if (fileExists("${frameworkDir}/reports")) {
+                            archiveArtifacts artifacts: "${frameworkDir}/reports/*", fingerprint: true
+                            junit "${frameworkDir}/reports/junit_results.xml"
+                            echo "Successfully archived artifacts"
+                        } else {
+                            echo "No reports directory found at ${frameworkDir}/reports"
+                        }
                     } else {
-                        echo "No reports directory found to archive"
+                        echo "No framework directory found to archive from"
                     }
                 }
             }
@@ -185,10 +211,14 @@ pipeline {
         always {
             sh '''
                 echo "=== Pipeline completed ==="
-                echo "Build completed"
-                echo "Workspace contents:"
+                echo "Final workspace contents:"
                 pwd
                 ls -la
+
+                echo "Virtual environment:"
+                if [ -d "venv" ]; then
+                    echo "venv directory exists"
+                fi
             '''
         }
         success {
