@@ -44,41 +44,42 @@ pipeline {
 
                     echo "Found $TEST_COUNT test files"
 
-                    pytest --collect-only > /dev/null 2>&1
+                    cat > run_tests.py << 'PYTHON_SCRIPT'
+import subprocess
+import sys
 
-                    python3 -c "
-                    import subprocess
-                    import sys
+with open('test_files.txt', 'r') as f:
+    test_files = [line.strip() for line in f if line.strip()]
 
-                    with open('test_files.txt', 'r') as f:
-                        test_files = [line.strip() for line in f if line.strip()]
+cmd = ['pytest', '-v',
+       '--db_host=localhost',
+       '--db_port=5434',
+       '--db_name=mydatabase',
+       '--db_user=${DB_USER}',
+       '--db_password=${DB_PASS}',
+       '--parquet_path=/parquet_data',
+       '--html=reports/pytest_report.html',
+       '--self-contained-html',
+       '--junitxml=reports/junit_results.xml']
 
-                    cmd = ['pytest', '-v',
-                           '--db_host=localhost',
-                           '--db_port=5434',
-                           '--db_name=mydatabase',
-                           '--db_user=${DB_USER}',
-                           '--db_password=${DB_PASS}',
-                           '--parquet_path=/parquet_data',
-                           '--html=reports/pytest_report.html',
-                           '--self-contained-html',
-                           '--junitxml=reports/junit_results.xml']
+cmd.extend(test_files)
 
-                    cmd.extend(test_files)
+result = subprocess.run(cmd,
+                      capture_output=True,
+                      text=True)
 
-                    result = subprocess.run(cmd,
-                                          capture_output=True,
-                                          text=True)
+with open('reports/test_output.log', 'w') as f:
+    f.write(result.stdout)
+    f.write(result.stderr)
 
-                    with open('reports/test_output.log', 'w') as f:
-                        f.write(result.stdout)
-                        f.write(result.stderr)
+print(result.stdout)
+if result.stderr:
+    print(result.stderr)
 
-                    print(result.stdout)
-                    if result.stderr:
-                        print(result.stderr)
+sys.exit(result.returncode)
+PYTHON_SCRIPT
 
-                    sys.exit(result.returncode)
+                    python3 run_tests.py
                     '''
                 }
             }
@@ -86,10 +87,13 @@ pipeline {
                 always {
                     sh '''
                     cd "PyTest DQ Framework"
-                    echo "Test exit code: $?"
+                    TEST_EXIT=$?
+                    echo "Test exit code: $TEST_EXIT"
 
                     mkdir -p ../reports
                     cp -r reports/* ../reports/ 2>/dev/null || true
+
+                    exit $TEST_EXIT
                     '''
                 }
             }
@@ -110,7 +114,7 @@ pipeline {
                 echo "body { font-family: Arial, sans-serif; margin: 20px; }" > reports/assets/style.css
 
                 if [ -f "reports/test_output.log" ]; then
-                    TOTAL_TESTS=$(grep -c "test_.*PASSED\\|test_.*FAILED\\|test_.*ERROR" reports/test_output.log 2>/dev/null || echo "0")
+                    TOTAL_TESTS=$(grep -c "PASSED\\|FAILED\\|ERROR" reports/test_output.log 2>/dev/null || echo "0")
                     PASSED=$(grep -c "PASSED" reports/test_output.log 2>/dev/null || echo "0")
                     FAILED=$(grep -c "FAILED\\|ERROR" reports/test_output.log 2>/dev/null || echo "0")
 
