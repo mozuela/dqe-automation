@@ -16,20 +16,13 @@ pipeline {
                     # Create virtual environment
                     python3 -m venv venv
 
-                    # Activate (use . instead of source for compatibility)
+                    # Activate
                     . venv/bin/activate
 
                     # Install from requirements.txt
-                    if [ -f "PyTest_DQ_Framework/requirements.txt" ]; then
-                        echo "Installing from requirements.txt..."
-                        pip install -r PyTest_DQ_Framework/requirements.txt
-                    else
-                        echo "Installing basic packages..."
-                        pip install pytest pandas psycopg2-binary pyarrow pytest-html
-                    fi
+                    pip install -r PyTest_DQ_Framework/requirements.txt
 
-                    # Verify installation
-                    python -c "import pytest; import pandas; import psycopg2; print('Dependencies installed successfully')"
+                    echo "Dependencies installed successfully"
                 '''
             }
         }
@@ -46,7 +39,6 @@ pipeline {
                     ]) {
                         sh '''
                             echo "=== Running DQE Tests ==="
-                            echo "Database user: ${DB_USER}"
 
                             # Activate virtual environment
                             . venv/bin/activate
@@ -57,21 +49,19 @@ pipeline {
                             # Create reports directory
                             mkdir -p reports
 
-                            # Run tests with parameters
+                            # Set environment variables for pytest
+                            export DB_HOST=host.docker.internal
+                            export DB_PORT=5434
+                            export DB_NAME=mydatabase
+                            export DB_USER=${DB_USER}
+                            export DB_PASSWORD=${DB_PASSWORD}
+                            export PARQUET_PATH=/parquet_data
+
+                            # Run tests
                             python -m pytest tests/dq_checks/parquet_files/ -v \
-                                --db-host=host.docker.internal \
-                                --db-port=5434 \
-                                --db-name=mydatabase \
-                                --db-user=${DB_USER} \
-                                --db-password=${DB_PASSWORD} \
                                 --html=reports/test_report.html \
                                 --self-contained-html \
                                 --junitxml=reports/junit_results.xml
-
-                            # Show test summary
-                            echo "=== TEST EXECUTION COMPLETE ==="
-                            echo "HTML report: reports/test_report.html"
-                            echo "JUnit report: reports/junit_results.xml"
                         '''
                     }
                 }
@@ -92,18 +82,15 @@ pipeline {
     post {
         always {
             sh '''
-                echo "=== BUILD SUMMARY ==="
-                echo "Job: ${JOB_NAME}"
-                echo "Build Number: ${BUILD_NUMBER}"
-                echo "Build Status: ${currentBuild.currentResult}"
-                echo "Workspace: ${WORKSPACE}"
+                echo "=== BUILD COMPLETED ==="
+                echo "Job completed"
             '''
         }
         success {
-            echo '✅ Pipeline executed successfully!'
+            echo 'Pipeline executed successfully!'
         }
         failure {
-            echo '❌ Pipeline failed!'
+            echo 'Pipeline failed!'
         }
     }
 }
