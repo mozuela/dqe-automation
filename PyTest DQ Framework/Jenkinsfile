@@ -1,38 +1,33 @@
 pipeline {
     agent any
 
-    environment {
-        VENV_PATH = '/var/jenkins_home/venv'
-        PYTHON_PATH = "${VENV_PATH}/bin/python"
-        PIP_PATH = "${VENV_PATH}/bin/pip"
-        PYTEST_PATH = "${VENV_PATH}/bin/pytest"
-        PROJECT_DIR = "PyTest DQ Framework"
-        REPORTS_DIR = "${WORKSPACE}/${PROJECT_DIR}/reports"
-
-        // PostgreSQL connection settings
-        DB_HOST = "host.containers.internal"  // For Podman
-        DB_PORT = "5434"
-        DB_NAME = "mydatabase"
-        PARQUET_PATH = "/var/jenkins_home/workspace/DQE_Aut/data_dev/parquet_data"
-    }
-
     stages {
-        stage('Checkout') {
+        stage('Declarative: Checkout SCM') {
             steps {
                 checkout scm
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    extensions: [],
+                    userRemoteConfigs: [[url: 'https://github.com/mozuela/dqe-automation']]
+                ])
             }
         }
 
         stage('Verify Structure') {
             steps {
                 sh '''
-                echo "=== Verifying Project Structure ==="
-                echo "Current directory:"
-                pwd
-                ls -la
-
-                echo "Checking parquet data directory:"
-                ls -la "${PARQUET_PATH}" || echo "Parquet directory not found, will create if needed"
+                    echo "=== Verifying Project Structure ==="
+                    echo "Current directory:"
+                    pwd
+                    ls -la
+                    echo "Checking /parquet_data directory:"
+                    ls -la /parquet_data/ || echo "/parquet_data not found, will use alternative path"
                 '''
             }
         }
@@ -40,21 +35,19 @@ pipeline {
         stage('Install Dependencies') {
             steps {
                 sh '''
-                echo "=== Installing Dependencies ==="
-                cd "${PROJECT_DIR}"
-
-                if [ -f "requirements.txt" ]; then
-                    echo "Installing dependencies..."
-                    ${PIP_PATH} install -r requirements.txt
-
+                    echo "=== Installing Dependencies ==="
+                    cd "PyTest DQ Framework"
+                    if [ -f requirements.txt ]; then
+                        echo "Installing dependencies..."
+                        /var/jenkins_home/venv/bin/pip install -r requirements.txt
+                    fi
                     echo "Testing critical imports..."
-                    ${PYTHON_PATH} -c "
-import psycopg2
-import pandas
-import pytest
-print('✅ All critical imports successful')
+                    /var/jenkins_home/venv/bin/python -c "
+                    import psycopg2
+                    import pandas
+                    import pytest
+                    print('✅ All critical imports successful')
                     "
-                fi
                 '''
             }
         }
@@ -70,54 +63,37 @@ print('✅ All critical imports successful')
                         )
                     ]) {
                         sh '''
-                        echo "=== Running DQE Tests ==="
-                        echo "PostgreSQL User: ${DB_USER}"
+                            echo "=== Running DQE Tests ==="
+                            echo "PostgreSQL User: ${DB_USER}"
 
-                        # Change to project directory
-                        cd "${PROJECT_DIR}"
+                            cd "PyTest DQ Framework"
 
-                        # Create reports directory
-                        mkdir -p "${REPORTS_DIR}"
+                            # Create reports directory
+                            mkdir -p /var/jenkins_home/workspace/DQE_Aut/PyTest\ DQ\ Framework/reports
 
-                        # Create parquet directory if it doesn't exist
-                        mkdir -p "${PARQUET_PATH}" || true
+                            # Determine parquet path - use /parquet_data if it exists
+                            if [ -d "/parquet_data" ]; then
+                                PARQUET_PATH="/parquet_data"
+                                echo "Using parquet data from: ${PARQUET_PATH}"
+                                find ${PARQUET_PATH} -name "*.parquet" | head -3
+                            else
+                                PARQUET_PATH="/var/jenkins_home/workspace/DQE_Aut/data_dev/parquet_data"
+                                echo "Using parquet data from: ${PARQUET_PATH}"
+                                mkdir -p ${PARQUET_PATH}
+                            fi
 
-                        echo "Running 3 DQE tests with PostgreSQL credentials..."
+                            echo "Running 3 DQE tests with PostgreSQL credentials..."
 
-                        # Execute tests with all required arguments
-                        ${PYTEST_PATH} "tests/dq checks/parquet_files/" \
-                            -v \
-                            --db_host="${DB_HOST}" \
-                            --db_port="${DB_PORT}" \
-                            --db_name="${DB_NAME}" \
-                            --db_user="${DB_USER}" \
-                            --db_password="${DB_PASSWORD}" \
-                            --parquet_path="${PARQUET_PATH}" \
-                            --html="${REPORTS_DIR}/dqe_report.html" \
-                            --self-contained-html \
-                            --junitxml="${REPORTS_DIR}/junit_results.xml"
-
-                        # Check results
-                        TEST_EXIT_CODE=$?
-                        echo "Pytest exit code: ${TEST_EXIT_CODE}"
-
-                        # Create summary file
-                        echo "=== DQE TEST EXECUTION SUMMARY ===" > "${REPORTS_DIR}/execution_summary.txt"
-                        echo "Execution time: $(date)" >> "${REPORTS_DIR}/execution_summary.txt"
-                        echo "Project directory: ${PROJECT_DIR}" >> "${REPORTS_DIR}/execution_summary.txt"
-                        echo "Test directory: tests/dq checks/parquet_files/" >> "${REPORTS_DIR}/execution_summary.txt"
-                        echo "PostgreSQL Host: ${DB_HOST}:${DB_PORT}" >> "${REPORTS_DIR}/execution_summary.txt"
-                        echo "Database: ${DB_NAME}" >> "${REPORTS_DIR}/execution_summary.txt"
-                        echo "Pytest exit code: ${TEST_EXIT_CODE}" >> "${REPORTS_DIR}/execution_summary.txt"
-
-                        echo "" >> "${REPORTS_DIR}/execution_summary.txt"
-                        echo "Test files executed:" >> "${REPORTS_DIR}/execution_summary.txt"
-                        echo "1. test_facility_name_min_time_spent_per_visit_date.py" >> "${REPORTS_DIR}/execution_summary.txt"
-                        echo "2. test_facility_type_avg_time_spent_per_visit_date.py" >> "${REPORTS_DIR}/execution_summary.txt"
-                        echo "3. test_patient_sum_treatment_cost_per_facility_type.py" >> "${REPORTS_DIR}/execution_summary.txt"
-
-                        echo "" >> "${REPORTS_DIR}/execution_summary.txt"
-                        echo "=== Summary saved to ${REPORTS_DIR}/execution_summary.txt ==="
+                            /var/jenkins_home/venv/bin/pytest tests/dq\ checks/parquet_files/ -v \
+                                --db_host=host.containers.internal \
+                                --db_port=5434 \
+                                --db_name=mydatabase \
+                                --db_user=${DB_USER} \
+                                --db_password=${DB_PASSWORD} \
+                                --parquet_path=${PARQUET_PATH} \
+                                --html=/var/jenkins_home/workspace/DQE_Aut/PyTest\ DQ\ Framework/reports/dqe_report.html \
+                                --self-contained-html \
+                                --junitxml=/var/jenkins_home/workspace/DQE_Aut/PyTest\ DQ\ Framework/reports/junit_results.xml
                         '''
                     }
                 }
@@ -125,29 +101,12 @@ print('✅ All critical imports successful')
         }
 
         stage('Archive Results') {
+            when {
+                expression { currentBuild.result == null || currentBuild.result == 'SUCCESS' }
+            }
             steps {
-                sh '''
-                echo "=== Archiving Results ==="
-                echo "Reports directory: ${REPORTS_DIR}"
-
-                if [ -d "${REPORTS_DIR}" ]; then
-                    echo "Found reports:"
-                    ls -la "${REPORTS_DIR}"
-                fi
-                '''
-
-                archiveArtifacts artifacts: 'PyTest DQ Framework/reports/*.html, PyTest DQ Framework/reports/*.xml, PyTest DQ Framework/reports/*.txt', fingerprint: true
-
-                publishHTML([
-                    target: [
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: false,
-                        keepAll: true,
-                        reportDir: 'PyTest DQ Framework/reports',
-                        reportFiles: 'dqe_report.html',
-                        reportName: 'DQE Test Report'
-                    ]
-                ])
+                archiveArtifacts artifacts: 'PyTest DQ Framework/reports/*', fingerprint: true
+                junit 'PyTest DQ Framework/reports/junit_results.xml'
             }
         }
     }
@@ -155,10 +114,16 @@ print('✅ All critical imports successful')
     post {
         always {
             sh '''
-            echo "=== Pipeline completed ==="
-            echo "Status: ${currentBuild.currentResult}"
-            echo "Build: ${env.BUILD_NUMBER}"
+                echo "=== Pipeline completed ==="
+                echo "Build Status: ${currentBuild.result}"
+                echo "Workspace: ${WORKSPACE}"
             '''
+        }
+        success {
+            echo 'Pipeline executed successfully!'
+        }
+        failure {
+            echo 'Pipeline failed!'
         }
     }
 }
