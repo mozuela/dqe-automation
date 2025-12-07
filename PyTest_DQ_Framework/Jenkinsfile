@@ -8,9 +8,7 @@ pipeline {
                     $class: 'GitSCM',
                     branches: [[name: '*/main']],
                     extensions: [],
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/mozuela/dqe-automation'
-                    ]]
+                    userRemoteConfigs: [[url: 'https://github.com/mozuela/dqe-automation']]
                 ])
             }
         }
@@ -22,15 +20,16 @@ pipeline {
                     echo "Current directory:"
                     pwd
                     ls -la
-                    echo "Checking project structure:"
-                    find . -type f -name "*.py" | head -20
 
-                    if [ -d "PyTest DQ Framework" ]; then
-                        cd "PyTest DQ Framework"
-                        echo "Project structure in PyTest DQ Framework:"
-                        find . -type f -name "*.py" | head -20
-                        cd ..
-                    fi
+                    echo "Checking Python availability:"
+                    python3 --version
+                    python3 -m pip --version || echo "pip not available"
+
+                    echo "Looking for requirements.txt:"
+                    find . -name "requirements.txt" -type f
+
+                    echo "Checking for PyTest framework directories:"
+                    ls -la | grep -i pytest
                 '''
             }
         }
@@ -40,25 +39,31 @@ pipeline {
                 sh '''
                     echo "=== Installing Dependencies ==="
 
-                    if [ -f "PyTest DQ Framework/requirements.txt" ]; then
-                        echo "Found requirements.txt in PyTest DQ Framework/"
-                        cd "PyTest DQ Framework"
-                    elif [ -f "requirements.txt" ]; then
-                        echo "Found requirements.txt in root"
-                    else
-                        echo "No requirements.txt found"
+                    echo "Checking for virtual environment..."
+                    if [ ! -d "venv" ]; then
+                        echo "Creating virtual environment..."
+                        python3 -m venv venv
                     fi
 
-                    python3 -m pip install --upgrade pip
-                    python3 -m pip install pytest pandas psycopg2-binary pyarrow pytest-html
+                    echo "Activating virtual environment..."
+                    source venv/bin/activate
 
-                    python3 -c "
+                    echo "Upgrading pip in virtual environment..."
+                    pip install --upgrade pip
+
+                    echo "Installing dependencies..."
+                    pip install pytest pandas psycopg2-binary pyarrow pytest-html
+
+                    echo "Verifying installations..."
+                    python -c "
                     import psycopg2
                     import pandas as pd
                     import pytest
                     import pyarrow
                     print('All critical imports successful')
                     "
+
+                    deactivate
                 '''
             }
         }
@@ -77,72 +82,69 @@ pipeline {
                             echo "=== Running DQE Tests ==="
                             echo "PostgreSQL User: ${DB_USER}"
 
-                            mkdir -p reports
-
-                            if [ -d "PyTest DQ Framework" ]; then
-                                PROJECT_ROOT="PyTest DQ Framework"
+                            # Determine which directory to use
+                            if [ -d "PyTest_DQ_Framework" ]; then
+                                echo "Using PyTest_DQ_Framework directory"
+                                FRAMEWORK_DIR="PyTest_DQ_Framework"
+                            elif [ -d "PyTest DQ Framework" ]; then
+                                echo "Using 'PyTest DQ Framework' directory"
+                                FRAMEWORK_DIR="PyTest DQ Framework"
                             else
-                                PROJECT_ROOT="."
+                                echo "ERROR: No PyTest framework directory found"
+                                exit 1
                             fi
 
-                            cd "${PROJECT_ROOT}"
+                            echo "Framework directory: ${FRAMEWORK_DIR}"
 
-                            echo "Current directory for tests:"
+                            # Activate virtual environment
+                            source venv/bin/activate
+
+                            # Create reports directory
+                            mkdir -p "${FRAMEWORK_DIR}/reports"
+
+                            # Go to framework directory
+                            cd "${FRAMEWORK_DIR}"
+
+                            echo "Current directory:"
                             pwd
                             ls -la
 
-                            echo "Looking for test files:"
-                            find . -name "test_*.py" -type f | head -10
+                            echo "Test files found:"
+                            find tests -name "test_*.py" -type f
 
-                            if [ -d "tests/dq_checks/parquet_files" ]; then
-                                echo "Found test directory: tests/dq_checks/parquet_files"
-                                ls -la "tests/dq_checks/parquet_files/"
-                            else
-                                echo "Test directory not found"
-                                find . -type d -name "*test*" -o -name "*dq*"
-                            fi
-
+                            # Determine parquet path
                             PARQUET_PATH=""
                             if [ -d "/parquet_data" ]; then
                                 PARQUET_PATH="/parquet_data"
-                                echo "Using parquet data from: ${PARQUET_PATH}"
-                            elif [ -d "parquet_data" ]; then
-                                PARQUET_PATH="parquet_data"
-                                echo "Using local parquet data from: ${PARQUET_PATH}"
-                            elif [ -d "../parquet_data" ]; then
-                                PARQUET_PATH="../parquet_data"
-                                echo "Using parent parquet data from: ${PARQUET_PATH}"
+                            elif [ -d "../data_dev/parquet_data" ]; then
+                                PARQUET_PATH="../data_dev/parquet_data"
+                            elif [ -d "../../data_dev/parquet_data" ]; then
+                                PARQUET_PATH="../../data_dev/parquet_data"
                             else
-                                echo "No parquet directory found"
-                                PARQUET_PATH="./"
+                                echo "Warning: No parquet directory found in standard locations"
+                                echo "Will use current directory"
+                                PARQUET_PATH="."
                             fi
 
-                            if [ ! -f "pytest.ini" ]; then
-                                echo "Creating pytest.ini configuration..."
-                                cat > pytest.ini << EOF
-[pytest]
-testpaths = tests/dq_checks/parquet_files
-python_files = test_*.py
-python_classes = Test*
-python_functions = test_*
-addopts = -v --tb=short
-EOF
-                            fi
+                            echo "Using PARQUET_PATH: ${PARQUET_PATH}"
+                            ls -la "${PARQUET_PATH}" 2>/dev/null || echo "Cannot list PARQUET_PATH"
 
-                            echo "Running DQE tests..."
+                            echo "Running tests with command line arguments..."
 
-                            python3 -m pytest tests/dq_checks/parquet_files/ -v \\
+                            # Run tests
+                            python -m pytest tests/dq_checks/parquet_files/ -v \\
                                 --db-host=host.docker.internal \\
                                 --db-port=5434 \\
                                 --db-name=mydatabase \\
                                 --db-user=${DB_USER} \\
                                 --db-password=${DB_PASSWORD} \\
-                                --parquet-path=${PARQUET_PATH} \\
-                                --html=../reports/dqe_report.html \\
+                                --parquet-path="${PARQUET_PATH}" \\
+                                --html="reports/dqe_report.html" \\
                                 --self-contained-html \\
-                                --junitxml=../reports/junit_results.xml || true
+                                --junitxml="reports/junit_results.xml" || echo "Tests completed with some failures"
 
-                            echo "Test execution completed"
+                            echo "Test execution finished"
+                            deactivate
                         '''
                     }
                 }
@@ -151,16 +153,28 @@ EOF
 
         stage('Archive Results') {
             when {
-                expression { currentBuild.currentResult == null || currentBuild.currentResult == 'SUCCESS' || currentBuild.currentResult == 'UNSTABLE' }
+                expression {
+                    currentBuild.currentResult == null ||
+                    currentBuild.currentResult == 'SUCCESS' ||
+                    currentBuild.currentResult == 'UNSTABLE'
+                }
             }
             steps {
                 script {
-                    if (fileExists('reports')) {
-                        archiveArtifacts artifacts: 'reports/*', fingerprint: true
-                        junit 'reports/junit_results.xml'
-                    } else if (fileExists('PyTest DQ Framework/reports')) {
-                        archiveArtifacts artifacts: 'PyTest DQ Framework/reports/*', fingerprint: true
-                        junit 'PyTest DQ Framework/reports/junit_results.xml'
+                    // Determine framework directory
+                    def frameworkDir = ""
+                    if (fileExists('PyTest_DQ_Framework')) {
+                        frameworkDir = 'PyTest_DQ_Framework'
+                    } else if (fileExists('PyTest DQ Framework')) {
+                        frameworkDir = 'PyTest DQ Framework'
+                    }
+
+                    if (frameworkDir && fileExists("${frameworkDir}/reports")) {
+                        archiveArtifacts artifacts: "${frameworkDir}/reports/*", fingerprint: true
+                        junit "${frameworkDir}/reports/junit_results.xml"
+                        echo "Artifacts archived from ${frameworkDir}/reports/"
+                    } else {
+                        echo "No reports directory found to archive"
                     }
                 }
             }
@@ -171,14 +185,10 @@ EOF
         always {
             sh '''
                 echo "=== Pipeline completed ==="
-                echo "Build Status: ${currentBuild.currentResult}"
+                echo "Build completed"
                 echo "Workspace contents:"
+                pwd
                 ls -la
-
-                if [ -d "reports" ]; then
-                    echo "Reports directory:"
-                    ls -la reports/
-                fi
             '''
         }
         success {
