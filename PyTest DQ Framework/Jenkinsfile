@@ -19,72 +19,78 @@ pipeline {
                     echo "=== DQE AUTOMATION ==="
                     echo "User: ${DB_USER}"
                     echo "Build: ${BUILD_NUMBER}"
-                    echo "Workspace: ${WORKSPACE}"
 
                     ls -la
 
-                    python3 -m venv venv
-
-                    if [ -d "venv/bin" ]; then
-                        . venv/bin/activate
-                        pip install --upgrade pip
-                    else
-                        echo "Virtual environment creation failed"
-                        exit 1
-                    fi
-
-                    if [ -f "requirements.txt" ]; then
-                        pip install -r requirements.txt
-                    else
-                        find . -name "requirements.txt" | head -5
-                    fi
-
-                    mkdir -p reports
-
                     TEST_DIR="PyTest DQ Framework"
+
                     if [ -d "$TEST_DIR" ]; then
                         cd "$TEST_DIR"
-                        echo "In test directory: $(pwd)"
-                        ls -la
-                    fi
+                        echo "Changed to test directory: $(pwd)"
 
-                    echo "Running tests..."
-
-                    TEST_FILES="tests/dq checks/parquet_files/test_*.py"
-                    if ! ls $TEST_FILES 1> /dev/null 2>&1; then
-                        TEST_FILES=$(find . -name "test_*.py" -type f | head -5 | tr '\n' ' ')
-                        if [ -z "$TEST_FILES" ]; then
-                            echo "ERROR: No test files found"
-                            exit 1
+                        if [ -d "../venv" ]; then
+                            echo "Using existing virtual environment"
+                            . ../venv/bin/activate
+                        else
+                            echo "Creating new virtual environment"
+                            python3 -m venv ../venv
+                            . ../venv/bin/activate
                         fi
+
+                        pip install --upgrade pip
+
+                        if [ -f "requirements.txt" ]; then
+                            echo "Installing requirements from test directory"
+                            pip install -r requirements.txt
+                        else
+                            echo "requirements.txt not found in test directory"
+                        fi
+
+                        mkdir -p reports
+
+                        TEST_FILES="tests/dq checks/parquet_files/test_*.py"
+                        if ! ls $TEST_FILES 1> /dev/null 2>&1; then
+                            TEST_FILES=$(find . -name "test_*.py" -type f | head -5 | tr '\n' ' ')
+                            if [ -z "$TEST_FILES" ]; then
+                                echo "ERROR: No test files found"
+                                exit 1
+                            fi
+                        fi
+
+                        echo "Running pytest from: $(which pytest)"
+                        echo "Python from: $(which python)"
+
+                        pytest $TEST_FILES -v \
+                          --db_host="localhost" \
+                          --db_port="5434" \
+                          --db_name="mydatabase" \
+                          --db_user="${DB_USER}" \
+                          --db_password="${DB_PASS}" \
+                          --parquet_path="/parquet_data" \
+                          --html=reports/pytest_report.html \
+                          --self-contained-html \
+                          --junitxml=reports/junit_results.xml 2>&1 | tee reports/test_output.log
+
+                        TEST_EXIT_CODE=${PIPESTATUS[0]}
+                        echo "Test exit code: $TEST_EXIT_CODE"
+
+                        exit $TEST_EXIT_CODE
+                    else
+                        echo "ERROR: Test directory '$TEST_DIR' not found"
+                        exit 1
                     fi
-
-                    pytest $TEST_FILES -v \
-                      --db_host="localhost" \
-                      --db_port="5434" \
-                      --db_name="mydatabase" \
-                      --db_user="${DB_USER}" \
-                      --db_password="${DB_PASS}" \
-                      --parquet_path="/parquet_data" \
-                      --html=../reports/pytest_report.html \
-                      --self-contained-html \
-                      --junitxml=../reports/junit_results.xml 2>&1 | tee ../reports/test_output.log
-
-                    TEST_EXIT_CODE=${PIPESTATUS[0]}
-                    echo "Test exit code: $TEST_EXIT_CODE"
-
-                    if [ "$(pwd)" != "${WORKSPACE}" ]; then
-                        cd "${WORKSPACE}"
-                    fi
-
-                    exit $TEST_EXIT_CODE
                     '''
                 }
             }
             post {
                 always {
                     sh '''
-                    ls -la reports/ 2>/dev/null || echo "No reports directory"
+                    echo "Reports in test directory:"
+                    ls -la "PyTest DQ Framework/reports/" 2>/dev/null || echo "No reports in test directory"
+
+                    echo "Copying reports to workspace root..."
+                    mkdir -p reports
+                    cp -r "PyTest DQ Framework/reports/"* reports/ 2>/dev/null || echo "No reports to copy"
                     '''
                 }
             }
@@ -103,7 +109,6 @@ pipeline {
                 mkdir -p reports/assets
 
                 echo "body { font-family: Arial, sans-serif; margin: 20px; }" > reports/assets/style.css
-                echo ".summary { background-color: #f5f5f5; padding: 15px; border-radius: 5px; }" >> reports/assets/style.css
 
                 if [ -f "reports/test_output.log" ]; then
                     TOTAL_TESTS=$(grep -c "PASSED\\|FAILED\\|ERROR" reports/test_output.log 2>/dev/null || echo "0")
