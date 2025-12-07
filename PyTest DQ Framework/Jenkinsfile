@@ -2,49 +2,95 @@ pipeline {
     agent any
 
     stages {
-        stage('Run Tests with Credentials') {
+        stage('Checkout') {
             steps {
                 checkout scm
+            }
+        }
 
-                withCredentials([usernamePassword(
-                    credentialsId: 'postgres-dqe',
-                    usernameVariable: 'DB_USER',
-                    passwordVariable: 'DB_PASS'
-                )]) {
-                    sh '''
-                    echo "=== DQE AUTOMATION ==="
-                    echo "User: ${DB_USER}"
-                    echo "Build: ${BUILD_NUMBER}"
+        stage('Run Tests with Credentials') {
+            environment {
+                DB_USER = credentials('postgres-dqe').username
+                DB_PASS = credentials('postgres-dqe').password
+            }
+            steps {
+                script {
+                    withEnv(["DB_USER=${DB_USER}", "DB_PASS=${DB_PASS}"]) {
+                        sh '''#!/bin/bash
+                        echo "=== DQE AUTOMATION ==="
+                        echo "User: ${DB_USER}"
+                        echo "Build: ${BUILD_NUMBER}"
+                        echo "Workspace: ${WORKSPACE}"
 
-                    # Create and activate virtual environment
-                    python3 -m venv venv
-                    source venv/bin/activate
+                        # Create and activate virtual environment
+                        python3 -m venv venv
+                        . venv/bin/activate
 
-                    # Install dependencies in virtual environment
-                    pip install -r requirements.txt
+                        # Upgrade pip and install dependencies
+                        pip install --upgrade pip
 
-                    mkdir -p reports
-                    cd "PyTest DQ Framework"
+                        # Check if requirements.txt exists
+                        if [ -f "requirements.txt" ]; then
+                            echo "Installing requirements..."
+                            pip install -r requirements.txt
+                        else
+                            echo "requirements.txt not found, checking subdirectories..."
+                            find . -name "requirements.txt" -exec echo "Found: {}" \\;
+                        fi
 
-                    # Run tests
-                    pytest "tests/dq checks/parquet_files/test_*.py" -v \
-                      --db_host="localhost" \
-                      --db_port="5434" \
-                      --db_name="mydatabase" \
-                      --db_user=${DB_USER} \
-                      --db_password=${DB_PASS} \
-                      --parquet_path="/parquet_data" \
-                      --html=../reports/pytest_report.html \
-                      --self-contained-html \
-                      --junitxml=../reports/junit_results.xml 2>&1 | tee ../reports/test_output.log
-                    '''
+                        # Create reports directory
+                        mkdir -p reports
+
+                        # Navigate to test directory if it exists
+                        TEST_DIR="PyTest DQ Framework"
+                        if [ -d "$TEST_DIR" ]; then
+                            cd "$TEST_DIR"
+                            echo "Changed to directory: $(pwd)"
+                        else
+                            echo "Warning: Test directory '$TEST_DIR' not found"
+                            echo "Current directory contents:"
+                            ls -la
+                        fi
+
+                        # Run tests
+                        echo "Running tests..."
+                        pytest "tests/dq checks/parquet_files/test_*.py" -v \
+                          --db_host="localhost" \
+                          --db_port="5434" \
+                          --db_name="mydatabase" \
+                          --db_user="${DB_USER}" \
+                          --db_password="${DB_PASS}" \
+                          --parquet_path="/parquet_data" \
+                          --html=../reports/pytest_report.html \
+                          --self-contained-html \
+                          --junitxml=../reports/junit_results.xml 2>&1 | tee ../reports/test_output.log
+
+                        # Capture exit code
+                        TEST_EXIT_CODE=${PIPESTATUS[0]}
+                        echo "Test execution finished with exit code: $TEST_EXIT_CODE"
+
+                        # Exit with the test's exit code
+                        exit $TEST_EXIT_CODE
+                        '''
+                    }
+                }
+            }
+            post {
+                always {
+                    echo "Test stage completed"
+                    sh 'ls -la reports/ 2>/dev/null || echo "No reports directory"'
                 }
             }
         }
 
         stage('Generate Automatic Summary') {
+            when {
+                expression {
+                    fileExists('reports/test_output.log')
+                }
+            }
             steps {
-                sh '''
+                sh '''#!/bin/bash
                 echo "Analyzing test results..."
 
                 # Create assets directory
@@ -54,14 +100,14 @@ pipeline {
                 echo "body { font-family: Arial; }" > reports/assets/style.css
 
                 # Parse test results
-                TOTAL_TESTS=$(grep -c "PASSED\\|FAILED" reports/test_output.log || echo "0")
-                PASSED=$(grep -c "PASSED" reports/test_output.log || echo "0")
-                FAILED=$(grep -c "FAILED" reports/test_output.log || echo "0")
+                TOTAL_TESTS=$(grep -c "PASSED\\|FAILED" reports/test_output.log 2>/dev/null || echo "0")
+                PASSED=$(grep -c "PASSED" reports/test_output.log 2>/dev/null || echo "0")
+                FAILED=$(grep -c "FAILED" reports/test_output.log 2>/dev/null || echo "0")
 
                 # Check for specific issues
-                COUNT_MISMATCH=$(grep -c "Count mismatch" reports/test_output.log || echo "0")
-                COLUMN_NOT_FOUND=$(grep -c "Column.*not found" reports/test_output.log || echo "0")
-                NEGATIVE_VALUES=$(grep -c "negative values\\|below minimum" reports/test_output.log || echo "0")
+                COUNT_MISMATCH=$(grep -c "Count mismatch" reports/test_output.log 2>/dev/null || echo "0")
+                COLUMN_NOT_FOUND=$(grep -c "Column.*not found" reports/test_output.log 2>/dev/null || echo "0")
+                NEGATIVE_VALUES=$(grep -c "negative values\\|below minimum" reports/test_output.log 2>/dev/null || echo "0")
 
                 # Create dynamic summary
                 cat > reports/data_transformation_issues.md << "SUMMARY_END"
@@ -70,7 +116,7 @@ pipeline {
                 ## Execution Information
                 - Date: $(date)
                 - Build: ${BUILD_NUMBER}
-                - Database User: DQE_tester
+                - Database User: ${DB_USER:-Not available}
                 - Database: localhost:5434/mydatabase
 
                 ## Test Results Summary
@@ -83,6 +129,8 @@ pipeline {
                 if [ $TOTAL_TESTS -gt 0 ]; then
                     SUCCESS_RATE=$(( (PASSED * 100) / TOTAL_TESTS ))
                     echo "- Success Rate: $SUCCESS_RATE%" >> reports/data_transformation_issues.md
+                else
+                    echo "- No tests were executed or test output not found" >> reports/data_transformation_issues.md
                 fi
 
                 cat >> reports/data_transformation_issues.md << "ISSUES_END"
@@ -103,7 +151,7 @@ pipeline {
                     echo "- Data Validation: $NEGATIVE_VALUES test(s) failed due to invalid values" >> reports/data_transformation_issues.md
                 fi
 
-                if [ $FAILED -eq 0 ]; then
+                if [ $FAILED -eq 0 ] && [ $TOTAL_TESTS -gt 0 ]; then
                     echo "- No data quality issues detected" >> reports/data_transformation_issues.md
                 fi
 
@@ -117,26 +165,33 @@ pipeline {
 
                 ## Framework Status
                 - DQE Automation: Operational
-                - Credentials: Working (DQE_tester)
                 - Test Execution: Completed
                 - Issue Detection: Active
 
                 RECOMMENDATIONS_END
 
                 echo "Summary report generated"
+                echo "Files in reports directory:"
+                ls -la reports/
                 '''
             }
         }
 
         stage('Archive Results') {
+            when {
+                expression {
+                    fileExists('reports')
+                }
+            }
             steps {
                 archiveArtifacts artifacts: 'reports/**'
                 publishHTML([
                     reportDir: 'reports',
                     reportFiles: 'pytest_report.html',
-                    reportName: 'DQE Test Report'
+                    reportName: 'DQE Test Report',
+                    keepAll: true
                 ])
-                junit 'reports/junit_results.xml'
+                junit testResults: 'reports/junit_results.xml', skipPublishingChecks: false
             }
         }
 
@@ -145,11 +200,24 @@ pipeline {
                 echo "=== DQE AUTOMATION COMPLETE ==="
                 sh '''
                 echo "Generated deliverables:"
-                find reports/ -type f | sort
+                find reports/ -type f 2>/dev/null | sort || echo "No reports generated"
                 echo ""
                 echo "Check 'DQE Test Report' for HTML results"
                 '''
             }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline completed"
+            cleanWs()
+        }
+        success {
+            echo "Pipeline succeeded!"
+        }
+        failure {
+            echo "Pipeline failed!"
         }
     }
 }
