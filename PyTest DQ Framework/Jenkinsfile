@@ -20,8 +20,6 @@ pipeline {
                     echo "User: ${DB_USER}"
                     echo "Build: ${BUILD_NUMBER}"
 
-                    ls -la
-
                     TEST_DIR="PyTest DQ Framework"
 
                     if [ -d "$TEST_DIR" ]; then
@@ -42,24 +40,37 @@ pipeline {
                         if [ -f "requirements.txt" ]; then
                             echo "Installing requirements from test directory"
                             pip install -r requirements.txt
-                        else
-                            echo "requirements.txt not found in test directory"
                         fi
 
                         mkdir -p reports
 
-                        TEST_FILES="tests/dq checks/parquet_files/test_*.py"
-                        if ! ls $TEST_FILES 1> /dev/null 2>&1; then
-                            TEST_FILES=$(find . -name "test_*.py" -type f | head -5 | tr '\n' ' ')
+                        echo "Looking for test files..."
+
+                        # Opción 1: Buscar archivos en el directorio específico (con espacio)
+                        TEST_PATH="tests/dq checks/parquet_files"
+                        if [ -d "$TEST_PATH" ]; then
+                            echo "Found test directory: $TEST_PATH"
+                            TEST_FILES="$TEST_PATH/test_*.py"
+                        else
+                            echo "Test directory '$TEST_PATH' not found, searching recursively..."
+                            TEST_FILES=$(find . -path "*dq checks*" -name "test_*.py" -type f | head -10 | tr '\n' ' ')
                             if [ -z "$TEST_FILES" ]; then
-                                echo "ERROR: No test files found"
-                                exit 1
+                                echo "Searching for any test files..."
+                                TEST_FILES=$(find . -name "test_*.py" -type f | head -10 | tr '\n' ' ')
                             fi
+                        fi
+
+                        echo "Test files to run: $TEST_FILES"
+
+                        if [ -z "$TEST_FILES" ]; then
+                            echo "ERROR: No test files found"
+                            exit 1
                         fi
 
                         echo "Running pytest from: $(which pytest)"
                         echo "Python from: $(which python)"
 
+                        # Ejecutar pytest con los archivos encontrados
                         pytest $TEST_FILES -v \
                           --db_host="localhost" \
                           --db_port="5434" \
@@ -85,12 +96,12 @@ pipeline {
             post {
                 always {
                     sh '''
-                    echo "Reports in test directory:"
-                    ls -la "PyTest DQ Framework/reports/" 2>/dev/null || echo "No reports in test directory"
-
                     echo "Copying reports to workspace root..."
                     mkdir -p reports
                     cp -r "PyTest DQ Framework/reports/"* reports/ 2>/dev/null || echo "No reports to copy"
+
+                    echo "Workspace reports:"
+                    ls -la reports/ 2>/dev/null || echo "No reports directory"
                     '''
                 }
             }
@@ -111,7 +122,7 @@ pipeline {
                 echo "body { font-family: Arial, sans-serif; margin: 20px; }" > reports/assets/style.css
 
                 if [ -f "reports/test_output.log" ]; then
-                    TOTAL_TESTS=$(grep -c "PASSED\\|FAILED\\|ERROR" reports/test_output.log 2>/dev/null || echo "0")
+                    TOTAL_TESTS=$(grep -c "test_.*PASSED\\|test_.*FAILED\\|test_.*ERROR" reports/test_output.log 2>/dev/null || echo "0")
                     PASSED=$(grep -c "PASSED" reports/test_output.log 2>/dev/null || echo "0")
                     FAILED=$(grep -c "FAILED\\|ERROR" reports/test_output.log 2>/dev/null || echo "0")
 
