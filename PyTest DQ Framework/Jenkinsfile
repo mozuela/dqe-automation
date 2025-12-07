@@ -1,6 +1,13 @@
 pipeline {
     agent any
 
+    environment {
+        POSTGRES_CREDS = credentials('postgres-dqe')
+        WORKSPACE_DIR = "${env.WORKSPACE}"
+        VENV_PATH = "${env.WORKSPACE}/venv"
+        REPORTS_DIR = "${env.WORKSPACE}/reports"
+    }
+
     stages {
         stage('Checkout') {
             steps {
@@ -8,265 +15,63 @@ pipeline {
             }
         }
 
-        stage('Run Tests') {
+        stage('Setup') {
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'postgres-dqe',
-                    usernameVariable: 'DB_USER',
-                    passwordVariable: 'DB_PASS'
-                )]) {
-                    sh '''#!/bin/bash
-                    echo "=== DQE AUTOMATION ==="
-                    echo "User: ${DB_USER}"
-                    echo "Build: ${BUILD_NUMBER}"
-
-                    cd "PyTest DQ Framework"
-
-                    if [ -d "../venv" ]; then
-                        . ../venv/bin/activate
-                    else
-                        python3 -m venv ../venv
-                        . ../venv/bin/activate
-                    fi
-
-                    pip install --upgrade pip
-                    pip install -r requirements.txt
-
-                    mkdir -p reports
-
-                    find "tests/dq checks/parquet_files" -name "test_*.py" > test_files.txt
-                    TEST_COUNT=$(wc -l < test_files.txt)
-
-                    if [ $TEST_COUNT -eq 0 ]; then
-                        echo "ERROR: No test files found"
-                        exit 1
-                    fi
-
-                    echo "Found $TEST_COUNT test files"
-
-                    echo "Testing database connection..."
-                    python3 -c "
-import psycopg2
-import os
-
-try:
-    conn = psycopg2.connect(
-        host='localhost',
-        port=5434,
-        database='mydatabase',
-        user='${DB_USER}',
-        password='${DB_PASS}'
-    )
-    print('✓ Database connection successful')
-    conn.close()
-except Exception as e:
-    print(f'✗ Database connection failed: {e}')
-"
-
-                    cat > run_tests.py << EOF
-import subprocess
-import sys
-
-with open('test_files.txt', 'r') as f:
-    test_files = [line.strip() for line in f if line.strip()]
-
-cmd = ['pytest', '-v',
-       '--db_host=localhost',
-       '--db_port=5434',
-       '--db_name=mydatabase',
-       '--db_user=${DB_USER}',
-       '--db_password=${DB_PASS}',
-       '--parquet_path=/parquet_data',
-       '--html=reports/pytest_report.html',
-       '--self-contained-html',
-       '--junitxml=reports/junit_results.xml']
-
-cmd.extend(test_files)
-
-print('Running:', ' '.join(cmd))
-
-result = subprocess.run(cmd,
-                      capture_output=True,
-                      text=True)
-
-with open('reports/test_output.log', 'w') as f:
-    f.write(result.stdout)
-    if result.stderr:
-        f.write('\\nSTDERR:\\n')
-        f.write(result.stderr)
-
-print(result.stdout)
-if result.stderr:
-    print('STDERR:', result.stderr)
-
-sys.exit(result.returncode)
-EOF
-
-                    python3 run_tests.py
-                    '''
-                }
-            }
-            post {
-                always {
-                    sh '''
-                    cd "PyTest DQ Framework"
-                    TEST_EXIT=$?
-                    echo "Test exit code: $TEST_EXIT"
-
-                    mkdir -p ../reports
-                    cp -r reports/* ../reports/ 2>/dev/null || true
-
-                    exit $TEST_EXIT
-                    '''
-                }
+                sh """
+                python3 -m venv ${VENV_PATH}
+                source ${VENV_PATH}/bin/activate
+                pip install --upgrade pip
+                pip install -r requirements.txt
+                pip install pytest pytest-html
+                mkdir -p ${REPORTS_DIR}
+                """
             }
         }
 
-        stage('Generate Summary') {
-            when {
-                expression {
-                    fileExists('reports/test_output.log')
-                }
-            }
-            steps {
-                sh '''#!/bin/bash
-                echo "Analyzing test results..."
-
-                mkdir -p reports/assets
-
-                echo "body { font-family: Arial, sans-serif; margin: 20px; }" > reports/assets/style.css
-
-                if [ -f "reports/test_output.log" ]; then
-                    TOTAL_TESTS=$(grep -c "PASSED\\|FAILED\\|ERROR" reports/test_output.log 2>/dev/null || echo "0")
-                    PASSED=$(grep -c "PASSED" reports/test_output.log 2>/dev/null || echo "0")
-                    FAILED=$(grep -c "FAILED\\|ERROR" reports/test_output.log 2>/dev/null || echo "0")
-
-                    COUNT_MISMATCH=$(grep -c -i "count mismatch" reports/test_output.log 2>/dev/null || echo "0")
-                    COLUMN_NOT_FOUND=$(grep -c -i "column.*not found" reports/test_output.log 2>/dev/null || echo "0")
-                    NEGATIVE_VALUES=$(grep -c -i "negative\\|below minimum" reports/test_output.log 2>/dev/null || echo "0")
-                else
-                    TOTAL_TESTS=0
-                    PASSED=0
-                    FAILED=0
-                    COUNT_MISMATCH=0
-                    COLUMN_NOT_FOUND=0
-                    NEGATIVE_VALUES=0
-                fi
-
-                cat > reports/data_transformation_issues.md << EOF
-# Data Transformation Issues Report
-
-## Execution Information
-- Date: $(date)
-- Build: ${BUILD_NUMBER}
-- Database User: ${DB_USER:-Not available}
-- Database: localhost:5434/mydatabase
-
-## Test Results Summary
-- Total Tests Executed: $TOTAL_TESTS
-- Tests Passed: $PASSED
-- Tests Failed: $FAILED
-EOF
-
-                if [ $TOTAL_TESTS -gt 0 ]; then
-                    SUCCESS_RATE=$(( (PASSED * 100) / TOTAL_TESTS ))
-                    echo "- Success Rate: $SUCCESS_RATE%" >> reports/data_transformation_issues.md
-                else
-                    echo "- No tests were executed" >> reports/data_transformation_issues.md
-                fi
-
-                cat >> reports/data_transformation_issues.md << EOF
-
-## Issues Detected in This Execution
-EOF
-
-                [ $COUNT_MISMATCH -gt 0 ] && echo "- Count Mismatch: $COUNT_MISMATCH test(s) failed due to record count discrepancies" >> reports/data_transformation_issues.md
-                [ $COLUMN_NOT_FOUND -gt 0 ] && echo "- Column Structure: $COLUMN_NOT_FOUND test(s) failed due to missing columns" >> reports/data_transformation_issues.md
-                [ $NEGATIVE_VALUES -gt 0 ] && echo "- Data Validation: $NEGATIVE_VALUES test(s) failed due to invalid values" >> reports/data_transformation_issues.md
-
-                if [ $FAILED -eq 0 ] && [ $TOTAL_TESTS -gt 0 ]; then
-                    echo "- No data quality issues detected" >> reports/data_transformation_issues.md
-                elif [ $TOTAL_TESTS -eq 0 ]; then
-                    echo "- WARNING: No tests were executed" >> reports/data_transformation_issues.md
-                fi
-
-                cat >> reports/data_transformation_issues.md << EOF
-
-## Recommendations
-1. Standardize column naming between source and target
-2. Implement data reconciliation processes
-3. Add validation rules for business logic
-4. Monitor data quality regularly
-
-## Framework Status
-- DQE Automation: ${TOTAL_TESTS:-0} tests executed
-- Test Execution: Completed
-- Issue Detection: Active
-- Report Generated: $(date +"%Y-%m-%d %H:%M:%S")
-EOF
-
-                echo "Summary report generated"
-                '''
-            }
-        }
-
-        stage('Archive Results') {
-            when {
-                expression {
-                    fileExists('reports')
-                }
-            }
+        stage('Run DQE Tests') {
             steps {
                 script {
-                    archiveArtifacts artifacts: 'reports/**/*', fingerprint: true
+                    withEnv([
+                        "PATH+VENV=${VENV_PATH}/bin",
+                        "POSTGRES_USERNAME=${POSTGRES_CREDS_USR}",
+                        "POSTGRES_PASSWORD=${POSTGRES_CREDS_PSW}"
+                    ]) {
+                        def timestamp = sh(script: 'date +%Y%m%d_%H%M%S', returnStdout: true).trim()
 
-                    if (fileExists('reports/pytest_report.html')) {
-                        publishHTML([
-                            reportDir: 'reports',
-                            reportFiles: 'pytest_report.html',
-                            reportName: 'DQE Test Report',
-                            keepAll: true,
-                            alwaysLinkToLastBuild: true
-                        ])
-                    }
+                        sh """
+                        source ${VENV_PATH}/bin/activate
 
-                    if (fileExists('reports/junit_results.xml')) {
-                        junit testResults: 'reports/junit_results.xml',
-                               skipPublishingChecks: false,
-                               allowEmptyResults: true
+                        # Execute your 3 specific DQE tests
+                        pytest tests/dq_checks/ \
+                            test_facility_name_min_time_spent_per_visit_date.py \
+                            test_facility_type_avg_time_spent_per_visit_date.py \
+                            test_patient_sum_treatment_cost_per_facility_type.py \
+                            -v \
+                            --html=${REPORTS_DIR}/dq_summary_${timestamp}.html \
+                            --self-contained-html
+                        """
                     }
                 }
             }
         }
 
-        stage('Final Status') {
+        stage('Archive') {
             steps {
-                echo "=== DQE AUTOMATION COMPLETE ==="
-                sh '''
-                echo "Generated deliverables:"
-                find reports/ -type f 2>/dev/null | sort || echo "No reports generated"
-                echo ""
-                echo "Check Jenkins artifacts for detailed reports"
-                '''
+                archiveArtifacts artifacts: 'reports/*.html', fingerprint: true
+                publishHTML([
+                    target: [
+                        reportDir: 'reports',
+                        reportFiles: 'dq_summary_*.html',
+                        reportName: 'DQE Summary Report'
+                    ]
+                ])
             }
         }
     }
 
     post {
         always {
-            echo "Pipeline finished"
-            echo "Build: ${BUILD_NUMBER}"
-            echo "Status: ${currentBuild.currentResult}"
-            echo "Duration: ${currentBuild.durationString}"
-        }
-        success {
-            echo "DQE Automation completed successfully"
-        }
-        failure {
-            echo "DQE Automation failed"
-        }
-        unstable {
-            echo "DQE Automation completed with unstable status"
+            sh "rm -rf ${VENV_PATH} || true"
         }
     }
 }
