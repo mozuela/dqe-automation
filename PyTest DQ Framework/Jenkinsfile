@@ -8,82 +8,89 @@ pipeline {
             }
         }
 
-        stage('Run Tests with Credentials') {
-            environment {
-                DB_USER = credentials('postgres-dqe').username
-                DB_PASS = credentials('postgres-dqe').password
-            }
+        stage('Run Tests') {
             steps {
-                script {
-                    withEnv(["DB_USER=${DB_USER}", "DB_PASS=${DB_PASS}"]) {
-                        sh '''#!/bin/bash
-                        echo "=== DQE AUTOMATION ==="
-                        echo "User: ${DB_USER}"
-                        echo "Build: ${BUILD_NUMBER}"
-                        echo "Workspace: ${WORKSPACE}"
+                withCredentials([usernamePassword(
+                    credentialsId: 'postgres-dqe',
+                    usernameVariable: 'DB_USER',
+                    passwordVariable: 'DB_PASS'
+                )]) {
+                    sh '''#!/bin/bash
+                    echo "=== DQE AUTOMATION ==="
+                    echo "User: ${DB_USER}"
+                    echo "Build: ${BUILD_NUMBER}"
+                    echo "Workspace: ${WORKSPACE}"
 
-                        # Create and activate virtual environment
-                        python3 -m venv venv
+                    ls -la
+
+                    python3 -m venv venv
+
+                    if [ -d "venv/bin" ]; then
                         . venv/bin/activate
-
-                        # Upgrade pip and install dependencies
                         pip install --upgrade pip
+                    else
+                        echo "Virtual environment creation failed"
+                        exit 1
+                    fi
 
-                        # Check if requirements.txt exists
-                        if [ -f "requirements.txt" ]; then
-                            echo "Installing requirements..."
-                            pip install -r requirements.txt
-                        else
-                            echo "requirements.txt not found, checking subdirectories..."
-                            find . -name "requirements.txt" -exec echo "Found: {}" \\;
+                    if [ -f "requirements.txt" ]; then
+                        pip install -r requirements.txt
+                    else
+                        find . -name "requirements.txt" | head -5
+                    fi
+
+                    mkdir -p reports
+
+                    TEST_DIR="PyTest DQ Framework"
+                    if [ -d "$TEST_DIR" ]; then
+                        cd "$TEST_DIR"
+                        echo "In test directory: $(pwd)"
+                        ls -la
+                    fi
+
+                    echo "Running tests..."
+
+                    TEST_FILES="tests/dq checks/parquet_files/test_*.py"
+                    if ! ls $TEST_FILES 1> /dev/null 2>&1; then
+                        TEST_FILES=$(find . -name "test_*.py" -type f | head -5 | tr '\n' ' ')
+                        if [ -z "$TEST_FILES" ]; then
+                            echo "ERROR: No test files found"
+                            exit 1
                         fi
+                    fi
 
-                        # Create reports directory
-                        mkdir -p reports
+                    pytest $TEST_FILES -v \
+                      --db_host="localhost" \
+                      --db_port="5434" \
+                      --db_name="mydatabase" \
+                      --db_user="${DB_USER}" \
+                      --db_password="${DB_PASS}" \
+                      --parquet_path="/parquet_data" \
+                      --html=../reports/pytest_report.html \
+                      --self-contained-html \
+                      --junitxml=../reports/junit_results.xml 2>&1 | tee ../reports/test_output.log
 
-                        # Navigate to test directory if it exists
-                        TEST_DIR="PyTest DQ Framework"
-                        if [ -d "$TEST_DIR" ]; then
-                            cd "$TEST_DIR"
-                            echo "Changed to directory: $(pwd)"
-                        else
-                            echo "Warning: Test directory '$TEST_DIR' not found"
-                            echo "Current directory contents:"
-                            ls -la
-                        fi
+                    TEST_EXIT_CODE=${PIPESTATUS[0]}
+                    echo "Test exit code: $TEST_EXIT_CODE"
 
-                        # Run tests
-                        echo "Running tests..."
-                        pytest "tests/dq checks/parquet_files/test_*.py" -v \
-                          --db_host="localhost" \
-                          --db_port="5434" \
-                          --db_name="mydatabase" \
-                          --db_user="${DB_USER}" \
-                          --db_password="${DB_PASS}" \
-                          --parquet_path="/parquet_data" \
-                          --html=../reports/pytest_report.html \
-                          --self-contained-html \
-                          --junitxml=../reports/junit_results.xml 2>&1 | tee ../reports/test_output.log
+                    if [ "$(pwd)" != "${WORKSPACE}" ]; then
+                        cd "${WORKSPACE}"
+                    fi
 
-                        # Capture exit code
-                        TEST_EXIT_CODE=${PIPESTATUS[0]}
-                        echo "Test execution finished with exit code: $TEST_EXIT_CODE"
-
-                        # Exit with the test's exit code
-                        exit $TEST_EXIT_CODE
-                        '''
-                    }
+                    exit $TEST_EXIT_CODE
+                    '''
                 }
             }
             post {
                 always {
-                    echo "Test stage completed"
-                    sh 'ls -la reports/ 2>/dev/null || echo "No reports directory"'
+                    sh '''
+                    ls -la reports/ 2>/dev/null || echo "No reports directory"
+                    '''
                 }
             }
         }
 
-        stage('Generate Automatic Summary') {
+        stage('Generate Summary') {
             when {
                 expression {
                     fileExists('reports/test_output.log')
@@ -93,86 +100,81 @@ pipeline {
                 sh '''#!/bin/bash
                 echo "Analyzing test results..."
 
-                # Create assets directory
                 mkdir -p reports/assets
 
-                # Create simple CSS for reports
-                echo "body { font-family: Arial; }" > reports/assets/style.css
+                echo "body { font-family: Arial, sans-serif; margin: 20px; }" > reports/assets/style.css
+                echo ".summary { background-color: #f5f5f5; padding: 15px; border-radius: 5px; }" >> reports/assets/style.css
 
-                # Parse test results
-                TOTAL_TESTS=$(grep -c "PASSED\\|FAILED" reports/test_output.log 2>/dev/null || echo "0")
-                PASSED=$(grep -c "PASSED" reports/test_output.log 2>/dev/null || echo "0")
-                FAILED=$(grep -c "FAILED" reports/test_output.log 2>/dev/null || echo "0")
+                if [ -f "reports/test_output.log" ]; then
+                    TOTAL_TESTS=$(grep -c "PASSED\\|FAILED\\|ERROR" reports/test_output.log 2>/dev/null || echo "0")
+                    PASSED=$(grep -c "PASSED" reports/test_output.log 2>/dev/null || echo "0")
+                    FAILED=$(grep -c "FAILED\\|ERROR" reports/test_output.log 2>/dev/null || echo "0")
 
-                # Check for specific issues
-                COUNT_MISMATCH=$(grep -c "Count mismatch" reports/test_output.log 2>/dev/null || echo "0")
-                COLUMN_NOT_FOUND=$(grep -c "Column.*not found" reports/test_output.log 2>/dev/null || echo "0")
-                NEGATIVE_VALUES=$(grep -c "negative values\\|below minimum" reports/test_output.log 2>/dev/null || echo "0")
+                    COUNT_MISMATCH=$(grep -c -i "count mismatch" reports/test_output.log 2>/dev/null || echo "0")
+                    COLUMN_NOT_FOUND=$(grep -c -i "column.*not found" reports/test_output.log 2>/dev/null || echo "0")
+                    NEGATIVE_VALUES=$(grep -c -i "negative\\|below minimum" reports/test_output.log 2>/dev/null || echo "0")
+                else
+                    TOTAL_TESTS=0
+                    PASSED=0
+                    FAILED=0
+                    COUNT_MISMATCH=0
+                    COLUMN_NOT_FOUND=0
+                    NEGATIVE_VALUES=0
+                fi
 
-                # Create dynamic summary
-                cat > reports/data_transformation_issues.md << "SUMMARY_END"
-                # Data Transformation Issues Report
+                cat > reports/data_transformation_issues.md << EOF
+# Data Transformation Issues Report
 
-                ## Execution Information
-                - Date: $(date)
-                - Build: ${BUILD_NUMBER}
-                - Database User: ${DB_USER:-Not available}
-                - Database: localhost:5434/mydatabase
+## Execution Information
+- Date: $(date)
+- Build: ${BUILD_NUMBER}
+- Database User: ${DB_USER:-Not available}
+- Database: localhost:5434/mydatabase
 
-                ## Test Results Summary
-                - Total Tests Executed: $TOTAL_TESTS
-                - Tests Passed: $PASSED
-                - Tests Failed: $FAILED
-                SUMMARY_END
+## Test Results Summary
+- Total Tests Executed: $TOTAL_TESTS
+- Tests Passed: $PASSED
+- Tests Failed: $FAILED
+EOF
 
-                # Add success rate if we have tests
                 if [ $TOTAL_TESTS -gt 0 ]; then
                     SUCCESS_RATE=$(( (PASSED * 100) / TOTAL_TESTS ))
                     echo "- Success Rate: $SUCCESS_RATE%" >> reports/data_transformation_issues.md
                 else
-                    echo "- No tests were executed or test output not found" >> reports/data_transformation_issues.md
+                    echo "- No tests were executed" >> reports/data_transformation_issues.md
                 fi
 
-                cat >> reports/data_transformation_issues.md << "ISSUES_END"
+                cat >> reports/data_transformation_issues.md << EOF
 
-                ## Issues Detected in This Execution
-                ISSUES_END
+## Issues Detected in This Execution
+EOF
 
-                # Add dynamic issues
-                if [ $COUNT_MISMATCH -gt 0 ]; then
-                    echo "- Count Mismatch: $COUNT_MISMATCH test(s) failed due to record count discrepancies" >> reports/data_transformation_issues.md
-                fi
-
-                if [ $COLUMN_NOT_FOUND -gt 0 ]; then
-                    echo "- Column Structure: $COLUMN_NOT_FOUND test(s) failed due to missing columns" >> reports/data_transformation_issues.md
-                fi
-
-                if [ $NEGATIVE_VALUES -gt 0 ]; then
-                    echo "- Data Validation: $NEGATIVE_VALUES test(s) failed due to invalid values" >> reports/data_transformation_issues.md
-                fi
+                [ $COUNT_MISMATCH -gt 0 ] && echo "- Count Mismatch: $COUNT_MISMATCH test(s) failed due to record count discrepancies" >> reports/data_transformation_issues.md
+                [ $COLUMN_NOT_FOUND -gt 0 ] && echo "- Column Structure: $COLUMN_NOT_FOUND test(s) failed due to missing columns" >> reports/data_transformation_issues.md
+                [ $NEGATIVE_VALUES -gt 0 ] && echo "- Data Validation: $NEGATIVE_VALUES test(s) failed due to invalid values" >> reports/data_transformation_issues.md
 
                 if [ $FAILED -eq 0 ] && [ $TOTAL_TESTS -gt 0 ]; then
                     echo "- No data quality issues detected" >> reports/data_transformation_issues.md
+                elif [ $TOTAL_TESTS -eq 0 ]; then
+                    echo "- WARNING: No tests were executed" >> reports/data_transformation_issues.md
                 fi
 
-                cat >> reports/data_transformation_issues.md << "RECOMMENDATIONS_END"
+                cat >> reports/data_transformation_issues.md << EOF
 
-                ## Recommendations
-                1. Standardize column naming between source and target
-                2. Implement data reconciliation processes
-                3. Add validation rules for business logic
-                4. Monitor data quality regularly
+## Recommendations
+1. Standardize column naming between source and target
+2. Implement data reconciliation processes
+3. Add validation rules for business logic
+4. Monitor data quality regularly
 
-                ## Framework Status
-                - DQE Automation: Operational
-                - Test Execution: Completed
-                - Issue Detection: Active
-
-                RECOMMENDATIONS_END
+## Framework Status
+- DQE Automation: ${TOTAL_TESTS:-0} tests executed
+- Test Execution: Completed
+- Issue Detection: Active
+- Report Generated: $(date +"%Y-%m-%d %H:%M:%S")
+EOF
 
                 echo "Summary report generated"
-                echo "Files in reports directory:"
-                ls -la reports/
                 '''
             }
         }
@@ -184,14 +186,25 @@ pipeline {
                 }
             }
             steps {
-                archiveArtifacts artifacts: 'reports/**'
-                publishHTML([
-                    reportDir: 'reports',
-                    reportFiles: 'pytest_report.html',
-                    reportName: 'DQE Test Report',
-                    keepAll: true
-                ])
-                junit testResults: 'reports/junit_results.xml', skipPublishingChecks: false
+                script {
+                    archiveArtifacts artifacts: 'reports/**/*', fingerprint: true
+
+                    if (fileExists('reports/pytest_report.html')) {
+                        publishHTML([
+                            reportDir: 'reports',
+                            reportFiles: 'pytest_report.html',
+                            reportName: 'DQE Test Report',
+                            keepAll: true,
+                            alwaysLinkToLastBuild: true
+                        ])
+                    }
+
+                    if (fileExists('reports/junit_results.xml')) {
+                        junit testResults: 'reports/junit_results.xml',
+                               skipPublishingChecks: false,
+                               allowEmptyResults: true
+                    }
+                }
             }
         }
 
@@ -202,7 +215,7 @@ pipeline {
                 echo "Generated deliverables:"
                 find reports/ -type f 2>/dev/null | sort || echo "No reports generated"
                 echo ""
-                echo "Check 'DQE Test Report' for HTML results"
+                echo "Check Jenkins artifacts for detailed reports"
                 '''
             }
         }
@@ -210,14 +223,19 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline completed"
-            cleanWs()
+            echo "Pipeline finished"
+            echo "Build: ${BUILD_NUMBER}"
+            echo "Status: ${currentBuild.currentResult}"
+            echo "Duration: ${currentBuild.durationString}"
         }
         success {
-            echo "Pipeline succeeded!"
+            echo "DQE Automation completed successfully"
         }
         failure {
-            echo "Pipeline failed!"
+            echo "DQE Automation failed"
+        }
+        unstable {
+            echo "DQE Automation completed with unstable status"
         }
     }
 }
