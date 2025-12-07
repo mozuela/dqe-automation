@@ -26,7 +26,7 @@ class DataQualityLibrary:
     def check_count(df1, df2):
         count1 = len(df1)
         count2 = len(df2)
-        assert df1.count == df2.count, f"Count mismatch: {count1} vs {count2}"
+        assert count1 == count2, f"Count mismatch: {count1} vs {count2}"
 
     @staticmethod
     #Check if the dfs have same data
@@ -46,9 +46,50 @@ class DataQualityLibrary:
         if column_names is None:
             column_names = df.columns.tolist()
 
-        for column in df.column_names:
-            if column in df.columns:
-                null_count = df[column].isnull().sum()
-                assert null_count == 0, f"fColumn {column} has {null_count} null values"
+        if not isinstance(column_names, list):
+            raise TypeError(f"column_names must be a list, got {type(column_names)}")
+        for column in column_names:
+            if column not in df.columns:
+                raise ValueError(f"Column '{column}' not found in DataFrame")
+
+            null_count = df[column].isnull().sum()
+            assert null_count == 0, f"Column '{column}' has {null_count} null values"
+
+    @staticmethod
+    def check_value_range(df, column_name, min_value=None, max_value=None):
+        # Check range in the columns
+        if column_name not in df.columns:
+            raise ValueError(f"Column '{column_name}' not found in DataFrame")
+
+        # Check for values below minimum
+        if min_value is not None:
+            below_min = (df[column_name] < min_value).sum()
+            assert below_min == 0, f"Column '{column_name}' has {below_min} values below minimum {min_value}"
+
+        # Check for values above maximum
+        if max_value is not None:
+            above_max = (df[column_name] > max_value).sum()
+            assert above_max == 0, f"Column '{column_name}' has {above_max} values above maximum {max_value}"
+
+    @staticmethod
+    #Check if values in a column are in the allowed list
+    def check_allowed_values(df, column_name, allowed_values):
+        if column_name not in df.columns:
+            raise ValueError(f"Column '{column_name}' not found in DataFrame")
+
+        if not isinstance(allowed_values, list):
+            raise TypeError(f"allowed_values must be a list, got {type(allowed_values)}")
+
+        # Check for values not in allowed list
+        invalid_values = df[~df[column_name].isin(allowed_values)][column_name]
+        invalid_count = len(invalid_values)
+
+        if invalid_count > 0:
+            # Get sample of invalid values for error message
+            sample_invalid = invalid_values.head(5).tolist()
+            error_msg = f"Column '{column_name}' has {invalid_count} invalid values"
+            if invalid_count > 5:
+                error_msg += f" (sample: {sample_invalid}...)"
             else:
-                raise ValueError (f"Column '{column}' not found in DataFrame")
+                error_msg += f": {sample_invalid}"
+            raise AssertionError(error_msg)

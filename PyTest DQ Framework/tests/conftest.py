@@ -9,6 +9,7 @@ def pytest_addoption(parser):
     parser.addoption("--db_name", action="store", default="mydatabase", help="Database name")
     parser.addoption("--db_user", action="store", help="Database host")
     parser.addoption("--db_password", action="store", help="Database password")
+    parser.addoption("--parquet_path", action="store", default=r"C:\Users\julia_mendoza\OneDrive - EPAM\Cursos\DQE_Automation\Files\parquet_data", help="Path to parquet files")
 
 def pytest_configure(config):
     """
@@ -41,3 +42,22 @@ def db_connection(request):
             yield db_connector
     except Exception as e:
         pytest.fail(f"Failed to initialize PostgresConnectorContextManager: {e}")
+
+@pytest.fixture(scope='session')
+def parquet_reader(request):
+    """Session-level fixture for parquet reader"""
+    try:
+        parquet_path = request.config.getoption("--parquet_path")
+        reader = ParquetReader(base_path=parquet_path)
+        yield reader
+    except Exception as e:
+        pytest.fail(f"Failed to initialize ParquetReader: {e}")
+
+@pytest.fixture(scope='session')
+def data_quality_library():
+    """Session-level fixture for data quality library"""
+    try:
+        dq_library = DataQualityLibrary()
+        yield dq_library
+    except Exception as e:
+        pytest.fail(f"Failed to initialize DataQualityLibrary: {e}")

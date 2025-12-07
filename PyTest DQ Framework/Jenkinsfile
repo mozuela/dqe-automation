@@ -1,0 +1,33 @@
+pipeline {
+    agent any
+    environment {
+        POSTGRES_SECRET = credentials('postgres-credentials')
+    }
+    stages {
+        stage('Run Data Quality Tests') {
+            steps {
+                sh '''
+                pytest tests/ -m "parquet_data" \
+                    --db_host="postgres" \
+                    --db_port="5432" \
+                    --db_name="mydatabase" \
+                    --db_user=${POSTGRES_SECRET_USR} \
+                    --db_password=${POSTGRES_SECRET_PSW} \
+                    --html=html_report/report.html
+                '''
+            }
+        }
+        stage('Archive Reports') {
+            steps {
+                archiveArtifacts artifacts: 'html_report/**'
+                publishHTML(target: [
+                    allowMissing: false,
+                    keepAll: true,
+                    reportDir: 'html_report',
+                    reportFiles: 'report.html',
+                    reportName: 'Data Quality Report'
+                ])
+            }
+        }
+    }
+}
