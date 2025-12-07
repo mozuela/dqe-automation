@@ -130,15 +130,16 @@ pipeline {
                 junit 'reports/junit_results.xml'
             }
         }
-    }
 
-    post {
-        always {
-            echo "Pipeline completed. Check reports for details."
-            sh '''
-            echo "=== Generated Files ==="
-            find reports/ -type f -name "*.html" -o -name "*.md" -o -name "*.xml" | sort
-            '''
+        stage('Final Status') {
+            steps {
+                sh '''
+                echo "=== Generated Files ==="
+                find reports/ -type f -name "*.html" -o -name "*.md" -o -name "*.xml" | sort
+                echo ""
+                echo "Pipeline completed. Check reports for details."
+                '''
+            }
         }
     }
 }
