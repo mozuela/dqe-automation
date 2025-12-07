@@ -4,59 +4,13 @@ pipeline {
     environment {
         VENV_PATH = '/var/jenkins_home/venv'
         PYTHON_PATH = "${VENV_PATH}/bin/python"
-        PIP_PATH = "${VENV_PATH}/bin/pip"
         PYTEST_PATH = "${VENV_PATH}/bin/pytest"
-        REPORTS_DIR = "${WORKSPACE}/reports"
     }
 
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
-            }
-        }
-
-        stage('Verify Structure') {
-            steps {
-                sh '''
-                echo "=== Verifying Project Structure ==="
-                echo "Current directory:"
-                pwd
-                ls -la
-
-                echo "Tests directory:"
-                ls -la tests/ || echo "No tests directory found"
-
-                echo "DQ Checks directory:"
-                ls -la tests/dq_checks/ || echo "No dq_checks directory found"
-
-                echo "Python virtual environment:"
-                if [ -f "${PYTHON_PATH}" ]; then
-                    echo "Virtual environment found at ${VENV_PATH}"
-                else
-                    echo "ERROR: Virtual environment NOT found at ${VENV_PATH}"
-                    exit 1
-                fi
-                '''
-            }
-        }
-
-        stage('Install Dependencies') {
-            steps {
-                sh '''
-                echo "=== Installing Dependencies ==="
-
-                if [ -f "requirements.txt" ]; then
-                    echo "Found requirements.txt"
-                    echo "Installing dependencies..."
-                    ${PIP_PATH} install -r requirements.txt
-                else
-                    echo "No requirements.txt found"
-                fi
-
-                echo "Installed packages:"
-                ${PIP_PATH} list
-                '''
             }
         }
 
@@ -71,86 +25,33 @@ pipeline {
                         )
                     ]) {
                         sh '''
-                        # Create reports directory
-                        mkdir -p ${REPORTS_DIR}
-
                         echo "=== Running DQE Tests ==="
-                        echo "PostgreSQL User: ${POSTGRES_USER}"
-                        echo "Running 3 DQE tests from tests/dq_checks/"
 
-                        # List test files
-                        echo "Test files to execute:"
-                        ls -la tests/dq_checks/*.py || echo "No test files found"
+                        # Change to project directory
+                        cd "PyTest DQ Framework"
 
-                        # Execute tests
-                        ${PYTEST_PATH} tests/dq_checks/ \
+                        # Create reports directory
+                        mkdir -p reports
+
+                        # Run the 3 specific tests
+                        ${PYTEST_PATH} "tests/dq checks/parquet_files/test_facility_name_min_time_spent_per_visit_date.py" \
+                            "tests/dq checks/parquet_files/test_facility_type_avg_time_spent_per_visit_date.py" \
+                            "tests/dq checks/parquet_files/test_patient_sum_treatment_cost_per_facility_type.py" \
                             -v \
-                            --html=${REPORTS_DIR}/dqe_report.html \
-                            --self-contained-html \
-                            --junitxml=${REPORTS_DIR}/junit_results.xml
+                            --html=reports/dqe_report.html \
+                            --self-contained-html
 
-                        # Check results
-                        TEST_EXIT_CODE=$?
-                        echo "Pytest exit code: ${TEST_EXIT_CODE}"
-
-                        # Create summary file
-                        echo "=== DQE TEST EXECUTION SUMMARY ===" > ${REPORTS_DIR}/execution_summary.txt
-                        echo "Execution time: $(date)" >> ${REPORTS_DIR}/execution_summary.txt
-                        echo "Test directory: tests/dq_checks/" >> ${REPORTS_DIR}/execution_summary.txt
-                        echo "Pytest exit code: ${TEST_EXIT_CODE}" >> ${REPORTS_DIR}/execution_summary.txt
-
-                        # Count test files
-                        TEST_COUNT=$(ls tests/dq_checks/test_*.py 2>/dev/null | wc -l)
-                        echo "Number of test files: ${TEST_COUNT}" >> ${REPORTS_DIR}/execution_summary.txt
-
-                        # List test files
-                        echo "Test files:" >> ${REPORTS_DIR}/execution_summary.txt
-                        ls tests/dq_checks/test_*.py 2>/dev/null >> ${REPORTS_DIR}/execution_summary.txt || echo "None" >> ${REPORTS_DIR}/execution_summary.txt
-
-                        echo "=== Summary created: ${REPORTS_DIR}/execution_summary.txt ==="
+                        echo "=== Tests completed ==="
                         '''
                     }
                 }
             }
         }
 
-        stage('Archive Results') {
+        stage('Archive') {
             steps {
-                archiveArtifacts artifacts: 'reports/*.html, reports/*.xml, reports/*.txt', fingerprint: true
-
-                publishHTML([
-                    target: [
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: false,
-                        keepAll: true,
-                        reportDir: 'reports',
-                        reportFiles: 'dqe_report.html',
-                        reportName: 'DQE Test Report'
-                    ]
-                ])
-
-                sh '''
-                echo "=== Pipeline Summary ==="
-                echo "Build Number: ${BUILD_NUMBER}"
-                echo "Status: ${currentBuild.currentResult}"
-                echo "Workspace: ${WORKSPACE}"
-
-                if [ -f "${REPORTS_DIR}/execution_summary.txt" ]; then
-                    echo "Execution Summary:"
-                    cat ${REPORTS_DIR}/execution_summary.txt
-                fi
-                '''
+                archiveArtifacts artifacts: 'PyTest DQ Framework/reports/*.html', fingerprint: true
             }
-        }
-    }
-
-    post {
-        always {
-            sh '''
-            echo "=== Pipeline completed ==="
-            echo "Final status: ${currentBuild.currentResult}"
-            echo "Build URL: ${BUILD_URL}"
-            '''
         }
     }
 }
