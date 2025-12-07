@@ -7,18 +7,26 @@ pipeline {
                 checkout scm
 
                 withCredentials([usernamePassword(
-                    credentialsId: 'postgres-dqe',  // ESTE es el ID que debe existir
+                    credentialsId: 'postgres-dqe',
                     usernameVariable: 'DB_USER',
                     passwordVariable: 'DB_PASS'
                 )]) {
                     sh '''
-                    echo "=== USING CREDENTIALS ==="
-                    echo "User variable exists: ${DB_USER}"
+                    echo "=== DQE AUTOMATION ==="
+                    echo "User: ${DB_USER}"
+                    echo "Build: ${BUILD_NUMBER}"
 
+                    # Create and activate virtual environment
+                    python3 -m venv venv
+                    source venv/bin/activate
+
+                    # Install dependencies in virtual environment
                     pip install -r requirements.txt
+
                     mkdir -p reports
                     cd "PyTest DQ Framework"
 
+                    # Run tests
                     pytest "tests/dq checks/parquet_files/test_*.py" -v \
                       --db_host="localhost" \
                       --db_port="5434" \
@@ -34,6 +42,114 @@ pipeline {
             }
         }
 
-        // ... (mantén los otros stages igual) ...
+        stage('Generate Automatic Summary') {
+            steps {
+                sh '''
+                echo "Analyzing test results..."
+
+                # Create assets directory
+                mkdir -p reports/assets
+
+                # Create simple CSS for reports
+                echo "body { font-family: Arial; }" > reports/assets/style.css
+
+                # Parse test results
+                TOTAL_TESTS=$(grep -c "PASSED\\|FAILED" reports/test_output.log || echo "0")
+                PASSED=$(grep -c "PASSED" reports/test_output.log || echo "0")
+                FAILED=$(grep -c "FAILED" reports/test_output.log || echo "0")
+
+                # Check for specific issues
+                COUNT_MISMATCH=$(grep -c "Count mismatch" reports/test_output.log || echo "0")
+                COLUMN_NOT_FOUND=$(grep -c "Column.*not found" reports/test_output.log || echo "0")
+                NEGATIVE_VALUES=$(grep -c "negative values\\|below minimum" reports/test_output.log || echo "0")
+
+                # Create dynamic summary
+                cat > reports/data_transformation_issues.md << "SUMMARY_END"
+                # Data Transformation Issues Report
+
+                ## Execution Information
+                - Date: $(date)
+                - Build: ${BUILD_NUMBER}
+                - Database User: DQE_tester
+                - Database: localhost:5434/mydatabase
+
+                ## Test Results Summary
+                - Total Tests Executed: $TOTAL_TESTS
+                - Tests Passed: $PASSED
+                - Tests Failed: $FAILED
+                SUMMARY_END
+
+                # Add success rate if we have tests
+                if [ $TOTAL_TESTS -gt 0 ]; then
+                    SUCCESS_RATE=$(( (PASSED * 100) / TOTAL_TESTS ))
+                    echo "- Success Rate: $SUCCESS_RATE%" >> reports/data_transformation_issues.md
+                fi
+
+                cat >> reports/data_transformation_issues.md << "ISSUES_END"
+
+                ## Issues Detected in This Execution
+                ISSUES_END
+
+                # Add dynamic issues
+                if [ $COUNT_MISMATCH -gt 0 ]; then
+                    echo "- Count Mismatch: $COUNT_MISMATCH test(s) failed due to record count discrepancies" >> reports/data_transformation_issues.md
+                fi
+
+                if [ $COLUMN_NOT_FOUND -gt 0 ]; then
+                    echo "- Column Structure: $COLUMN_NOT_FOUND test(s) failed due to missing columns" >> reports/data_transformation_issues.md
+                fi
+
+                if [ $NEGATIVE_VALUES -gt 0 ]; then
+                    echo "- Data Validation: $NEGATIVE_VALUES test(s) failed due to invalid values" >> reports/data_transformation_issues.md
+                fi
+
+                if [ $FAILED -eq 0 ]; then
+                    echo "- No data quality issues detected" >> reports/data_transformation_issues.md
+                fi
+
+                cat >> reports/data_transformation_issues.md << "RECOMMENDATIONS_END"
+
+                ## Recommendations
+                1. Standardize column naming between source and target
+                2. Implement data reconciliation processes
+                3. Add validation rules for business logic
+                4. Monitor data quality regularly
+
+                ## Framework Status
+                - DQE Automation: Operational
+                - Credentials: Working (DQE_tester)
+                - Test Execution: Completed
+                - Issue Detection: Active
+
+                RECOMMENDATIONS_END
+
+                echo "Summary report generated"
+                '''
+            }
+        }
+
+        stage('Archive Results') {
+            steps {
+                archiveArtifacts artifacts: 'reports/**'
+                publishHTML([
+                    reportDir: 'reports',
+                    reportFiles: 'pytest_report.html',
+                    reportName: 'DQE Test Report'
+                ])
+                junit 'reports/junit_results.xml'
+            }
+        }
+
+        stage('Final Status') {
+            steps {
+                echo "=== DQE AUTOMATION COMPLETE ==="
+                sh '''
+                echo "Generated deliverables:"
+                find reports/ -type f | sort
+                echo ""
+                echo "Check 'DQE Test Report' for HTML results"
+                '''
+            }
+        }
     }
 }
