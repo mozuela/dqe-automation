@@ -21,26 +21,124 @@ pipeline {
                   --db_user=${DB_CREDS_USR} \
                   --db_password=${DB_CREDS_PSW} \
                   --parquet_path="/parquet_data" \
-                  --html=../reports/report.html \
-                  --self-contained-html 2>&1 | tee ../reports/output.log
-
-                # Create simple summary
-                echo "# Test Results" > ../reports/summary.md
-                echo "Passed: $(grep -c "PASSED" ../reports/output.log)" >> ../reports/summary.md
-                echo "Failed: $(grep -c "FAILED" ../reports/output.log)" >> ../reports/summary.md
+                  --html=../reports/pytest_report.html \
+                  --self-contained-html \
+                  --junitxml=../reports/junit_results.xml 2>&1 | tee ../reports/test_output.log
                 '''
             }
         }
 
-        stage('Archive') {
+        stage('Generate Automatic Summary') {
+            steps {
+                sh '''
+                echo "Analyzing test results..."
+
+                # Parse test results
+                TOTAL_TESTS=$(grep -c "PASSED\\|FAILED" reports/test_output.log || echo "0")
+                PASSED=$(grep -c "PASSED" reports/test_output.log || echo "0")
+                FAILED=$(grep -c "FAILED" reports/test_output.log || echo "0")
+
+                # Check for specific issues
+                COUNT_MISMATCH=$(grep -c "Count mismatch" reports/test_output.log || echo "0")
+                COLUMN_NOT_FOUND=$(grep -c "Column.*not found" reports/test_output.log || echo "0")
+                NEGATIVE_VALUES=$(grep -c "negative values\\|below minimum" reports/test_output.log || echo "0")
+                DUPLICATES=$(grep -c "duplicate" reports/test_output.log || echo "0")
+
+                # Create dynamic summary based on actual results
+                cat > reports/data_transformation_issues.md << END
+                # Data Transformation Issues Report
+
+                ## Execution Information
+                - Date: $(date)
+                - Build: ${BUILD_NUMBER}
+                - Database: localhost:5434/mydatabase
+
+                ## Test Results Summary
+                - Total Tests Executed: $TOTAL_TESTS
+                - Tests Passed: $PASSED
+                - Tests Failed: $FAILED
+                - Success Rate: $(( (PASSED * 100) / (TOTAL_TESTS > 0 ? TOTAL_TESTS : 1) ))%
+
+                ## Issues Detected in This Execution
+                END
+
+                # Add dynamic issues based on what was found
+                if [ $COUNT_MISMATCH -gt 0 ]; then
+                    echo "- Count Mismatch Issues: $COUNT_MISMATCH test(s) failed due to different record counts" >> reports/data_transformation_issues.md
+                fi
+
+                if [ $COLUMN_NOT_FOUND -gt 0 ]; then
+                    echo "- Column Structure Issues: $COLUMN_NOT_FOUND test(s) failed due to missing columns" >> reports/data_transformation_issues.md
+                fi
+
+                if [ $NEGATIVE_VALUES -gt 0 ]; then
+                    echo "- Data Validation Issues: $NEGATIVE_VALUES test(s) failed due to invalid values" >> reports/data_transformation_issues.md
+                fi
+
+                if [ $DUPLICATES -gt 0 ]; then
+                    echo "- Duplicate Data Issues: $DUPLICATES test(s) found duplicate records" >> reports/data_transformation_issues.md
+                fi
+
+                if [ $FAILED -eq 0 ]; then
+                    echo "- No data quality issues detected in this execution" >> reports/data_transformation_issues.md
+                fi
+
+                # Add recommendations based on found issues
+                cat >> reports/data_transformation_issues.md << END
+
+                ## Recommendations Based on Findings
+                END
+
+                if [ $COUNT_MISMATCH -gt 0 ]; then
+                    echo "1. Investigate ETL process for data loss or duplication" >> reports/data_transformation_issues.md
+                fi
+
+                if [ $COLUMN_NOT_FOUND -gt 0 ]; then
+                    echo "2. Review and fix column mappings in data transformations" >> reports/data_transformation_issues.md
+                fi
+
+                if [ $NEGATIVE_VALUES -gt 0 ]; then
+                    echo "3. Implement data validation rules for business logic" >> reports/data_transformation_issues.md
+                fi
+
+                if [ $FAILED -eq 0 ]; then
+                    echo "All data quality checks passed successfully" >> reports/data_transformation_issues.md
+                fi
+
+                cat >> reports/data_transformation_issues.md << END
+
+                ## Framework Status
+                - Test Execution: Completed
+                - Issue Detection: $(if [ $FAILED -gt 0 ]; then echo "Issues Found"; else echo "No Issues"; fi)
+                - Automation: Functional
+
+                END
+
+                echo "Dynamic summary created based on actual test results"
+                '''
+            }
+        }
+
+        stage('Archive Results') {
             steps {
                 archiveArtifacts artifacts: 'reports/**'
                 publishHTML([
                     reportDir: 'reports',
-                    reportFiles: 'report.html',
-                    reportName: 'DQE Report'
+                    reportFiles: 'pytest_report.html',
+                    reportName: 'DQE Test Report'
                 ])
+                junit 'reports/junit_results.xml'
             }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline completed. Check reports for details."
+            sh '''
+            echo "=== Generated Files ==="
+            find reports/ -type f -name "*.html" -o -name "*.md" -o -name "*.xml" | sort
+            '''
         }
     }
 }
