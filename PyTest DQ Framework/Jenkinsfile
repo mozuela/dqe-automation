@@ -8,6 +8,12 @@ pipeline {
         PYTEST_PATH = "${VENV_PATH}/bin/pytest"
         PROJECT_DIR = "PyTest DQ Framework"
         REPORTS_DIR = "${WORKSPACE}/${PROJECT_DIR}/reports"
+
+        // PostgreSQL connection settings
+        DB_HOST = "host.containers.internal"  // For Podman
+        DB_PORT = "5434"
+        DB_NAME = "mydatabase"
+        PARQUET_PATH = "/var/jenkins_home/workspace/DQE_Aut/data_dev/parquet_data"
     }
 
     stages {
@@ -25,13 +31,8 @@ pipeline {
                 pwd
                 ls -la
 
-                echo "Project directory: ${PROJECT_DIR}"
-                ls -la "${PROJECT_DIR}" || echo "Project directory not found"
-
-                if [ -d "${PROJECT_DIR}" ]; then
-                    echo "Checking test files..."
-                    ls -la "${PROJECT_DIR}/tests/dq checks/parquet_files/" || echo "Test files directory not found"
-                fi
+                echo "Checking parquet data directory:"
+                ls -la "${PARQUET_PATH}" || echo "Parquet directory not found, will create if needed"
                 '''
             }
         }
@@ -40,47 +41,20 @@ pipeline {
             steps {
                 sh '''
                 echo "=== Installing Dependencies ==="
-
-                # Change to project directory
                 cd "${PROJECT_DIR}"
 
-                echo "Current directory for installation:"
-                pwd
-
-                echo "Requirements.txt content:"
                 if [ -f "requirements.txt" ]; then
-                    cat requirements.txt
-                    echo "Installing dependencies from requirements.txt..."
+                    echo "Installing dependencies..."
                     ${PIP_PATH} install -r requirements.txt
 
-                    echo "Verifying installations:"
-                    ${PIP_PATH} list | grep -E "(pytest|pandas|psycopg|pyarrow)" || echo "No matching packages found"
-                else
-                    echo "ERROR: requirements.txt not found!"
-                    exit 1
+                    echo "Testing critical imports..."
+                    ${PYTHON_PATH} -c "
+import psycopg2
+import pandas
+import pytest
+print('✅ All critical imports successful')
+                    "
                 fi
-
-                # Test critical imports
-                echo "Testing critical imports..."
-                ${PYTHON_PATH} -c "
-try:
-    import psycopg2
-    print('✅ psycopg2 import successful')
-except ImportError as e:
-    print(f'❌ psycopg2 import failed: {e}')
-
-try:
-    import pandas
-    print('✅ pandas import successful')
-except ImportError as e:
-    print(f'❌ pandas import failed: {e}')
-
-try:
-    import pytest
-    print('✅ pytest import successful')
-except ImportError as e:
-    print(f'❌ pytest import failed: {e}')
-                "
                 '''
             }
         }
@@ -91,13 +65,13 @@ except ImportError as e:
                     withCredentials([
                         usernamePassword(
                             credentialsId: 'postgres-dqe',
-                            usernameVariable: 'POSTGRES_USER',
-                            passwordVariable: 'POSTGRES_PASS'
+                            usernameVariable: 'DB_USER',
+                            passwordVariable: 'DB_PASSWORD'
                         )
                     ]) {
                         sh '''
                         echo "=== Running DQE Tests ==="
-                        echo "PostgreSQL User: ${POSTGRES_USER}"
+                        echo "PostgreSQL User: ${DB_USER}"
 
                         # Change to project directory
                         cd "${PROJECT_DIR}"
@@ -105,11 +79,20 @@ except ImportError as e:
                         # Create reports directory
                         mkdir -p "${REPORTS_DIR}"
 
-                        echo "Running 3 DQE tests from tests/dq checks/parquet_files/"
+                        # Create parquet directory if it doesn't exist
+                        mkdir -p "${PARQUET_PATH}" || true
 
-                        # Execute the 3 specific parquet tests
+                        echo "Running 3 DQE tests with PostgreSQL credentials..."
+
+                        # Execute tests with all required arguments
                         ${PYTEST_PATH} "tests/dq checks/parquet_files/" \
                             -v \
+                            --db_host="${DB_HOST}" \
+                            --db_port="${DB_PORT}" \
+                            --db_name="${DB_NAME}" \
+                            --db_user="${DB_USER}" \
+                            --db_password="${DB_PASSWORD}" \
+                            --parquet_path="${PARQUET_PATH}" \
                             --html="${REPORTS_DIR}/dqe_report.html" \
                             --self-contained-html \
                             --junitxml="${REPORTS_DIR}/junit_results.xml"
@@ -123,9 +106,10 @@ except ImportError as e:
                         echo "Execution time: $(date)" >> "${REPORTS_DIR}/execution_summary.txt"
                         echo "Project directory: ${PROJECT_DIR}" >> "${REPORTS_DIR}/execution_summary.txt"
                         echo "Test directory: tests/dq checks/parquet_files/" >> "${REPORTS_DIR}/execution_summary.txt"
+                        echo "PostgreSQL Host: ${DB_HOST}:${DB_PORT}" >> "${REPORTS_DIR}/execution_summary.txt"
+                        echo "Database: ${DB_NAME}" >> "${REPORTS_DIR}/execution_summary.txt"
                         echo "Pytest exit code: ${TEST_EXIT_CODE}" >> "${REPORTS_DIR}/execution_summary.txt"
 
-                        # List executed test files
                         echo "" >> "${REPORTS_DIR}/execution_summary.txt"
                         echo "Test files executed:" >> "${REPORTS_DIR}/execution_summary.txt"
                         echo "1. test_facility_name_min_time_spent_per_visit_date.py" >> "${REPORTS_DIR}/execution_summary.txt"
@@ -133,7 +117,7 @@ except ImportError as e:
                         echo "3. test_patient_sum_treatment_cost_per_facility_type.py" >> "${REPORTS_DIR}/execution_summary.txt"
 
                         echo "" >> "${REPORTS_DIR}/execution_summary.txt"
-                        echo "=== Summary created ===" >> "${REPORTS_DIR}/execution_summary.txt"
+                        echo "=== Summary saved to ${REPORTS_DIR}/execution_summary.txt ==="
                         '''
                     }
                 }
@@ -149,8 +133,6 @@ except ImportError as e:
                 if [ -d "${REPORTS_DIR}" ]; then
                     echo "Found reports:"
                     ls -la "${REPORTS_DIR}"
-                else
-                    echo "No reports directory found"
                 fi
                 '''
 
@@ -174,8 +156,8 @@ except ImportError as e:
         always {
             sh '''
             echo "=== Pipeline completed ==="
-            echo "Final status: ${currentBuild.currentResult}"
-            echo "Build Number: ${BUILD_NUMBER}"
+            echo "Status: ${currentBuild.currentResult}"
+            echo "Build: ${env.BUILD_NUMBER}"
             '''
         }
     }
