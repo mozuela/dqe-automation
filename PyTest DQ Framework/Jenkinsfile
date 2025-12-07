@@ -84,7 +84,7 @@ pipeline {
 
                             echo "Running 3 DQE tests with PostgreSQL credentials..."
 
-                            /var/jenkins_home/venv/bin/pytest tests/dq\ checks/parquet_files/ -v \\
+                            /var/jenkins_home/venv/bin/pytest tests/dq_checks/parquet_files/ -v \\
                                 --db_host=host.containers.internal \\
                                 --db_port=5434 \\
                                 --db_name=mydatabase \\
