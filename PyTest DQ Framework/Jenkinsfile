@@ -3,9 +3,6 @@ pipeline {
 
     environment {
         POSTGRES_CREDS = credentials('postgres-dqe')
-        WORKSPACE_DIR = "${env.WORKSPACE}"
-        VENV_PATH = "${env.WORKSPACE}/venv"
-        REPORTS_DIR = "${env.WORKSPACE}/reports"
     }
 
     stages {
@@ -15,39 +12,35 @@ pipeline {
             }
         }
 
-        stage('Setup') {
+        stage('Install Dependencies') {
             steps {
                 sh """
-                python3 -m venv ${VENV_PATH}
-                source ${VENV_PATH}/bin/activate
-                pip install --upgrade pip
-                pip install -r requirements.txt
-                pip install pytest pytest-html
-                mkdir -p ${REPORTS_DIR}
+                # Install Python packages globally (for simplicity)
+                pip3 install --user pytest pytest-html
                 """
             }
         }
 
-        stage('Run DQE Tests') {
+        stage('Run Tests') {
             steps {
                 script {
-                    withEnv([
-                        "PATH+VENV=${VENV_PATH}/bin",
-                        "POSTGRES_USERNAME=${POSTGRES_CREDS_USR}",
-                        "POSTGRES_PASSWORD=${POSTGRES_CREDS_PSW}"
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'postgres-dqe',
+                            usernameVariable: 'POSTGRES_USERNAME',
+                            passwordVariable: 'POSTGRES_PASSWORD'
+                        )
                     ]) {
                         def timestamp = sh(script: 'date +%Y%m%d_%H%M%S', returnStdout: true).trim()
 
                         sh """
-                        source ${VENV_PATH}/bin/activate
+                        # Create reports directory
+                        mkdir -p reports
 
-                        # Execute your 3 specific DQE tests
-                        pytest tests/dq_checks/ \
-                            test_facility_name_min_time_spent_per_visit_date.py \
-                            test_facility_type_avg_time_spent_per_visit_date.py \
-                            test_patient_sum_treatment_cost_per_facility_type.py \
+                        # Run tests
+                        python3 -m pytest tests/dq_checks/ \
                             -v \
-                            --html=${REPORTS_DIR}/dq_summary_${timestamp}.html \
+                            --html=reports/dqe_report_${timestamp}.html \
                             --self-contained-html
                         """
                     }
@@ -58,20 +51,7 @@ pipeline {
         stage('Archive') {
             steps {
                 archiveArtifacts artifacts: 'reports/*.html', fingerprint: true
-                publishHTML([
-                    target: [
-                        reportDir: 'reports',
-                        reportFiles: 'dq_summary_*.html',
-                        reportName: 'DQE Summary Report'
-                    ]
-                ])
             }
-        }
-    }
-
-    post {
-        always {
-            sh "rm -rf ${VENV_PATH} || true"
         }
     }
 }
