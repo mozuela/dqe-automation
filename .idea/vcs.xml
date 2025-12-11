@@ -2,5 +2,6 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/Selenium Introduction/DQE_Aut_local" vcs="Git" />
   </component>
 </project>
